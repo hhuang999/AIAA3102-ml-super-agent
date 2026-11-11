@@ -8,6 +8,7 @@ AIAA3102 Final Project 工作区。目标是开发一个面向表格、文本和
 
 - [课程要求](<docs/AIAA3102 - Final Project - Full Assignment Requirements (1).md>)：课程约束与交付标准。
 - [环境与开发准备记录](docs/workspace-readiness.md)：本机、server、HPC、API 的实测结果与开发建议。
+- [Group 与学校 HPC 对比](docs/hpc-comparison.md)：更新连接资料后的正确登录结果、资源、申请测试与环境建议；远程环境以此为准。
 - `final_project_tasks/`：课程提供的两个任务、原始数据和任务说明；当前数据总量约 3 MB，随 private 仓库保存。
 - `scripts/check_environment.py`：本机环境检查入口。
 - `AGENTS.md`：后续开发 Agent 的项目入口与既有决定。

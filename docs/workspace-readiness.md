@@ -2,6 +2,8 @@
 
 检查日期：2026-11-11（Asia/Singapore）。以下是当前会话的实测快照；共享资源占用和容量会变化。
 
+**连接资料已更新。** 本文旧 server 与 HPC 认证部分属于首次检查历史。当前 group 与学校 HPC 的正确入口、登录结果和建议见 [HPC 对比记录](hpc-comparison.md)，后续环境决策以该记录为准。
+
 ## 工作区状态
 
 实际路径：`D:\HHB\HKUST(GZ)_Library_code\AIAA3102_Python_for_AI\Final_project_agent`。当前工作区包含课程要求、API 接入说明、server/HPC 凭据和两个课程任务，没有已有 Agent 实现或项目依赖声明。后续开发 SPEC 尚未提供。
@@ -37,7 +39,7 @@ Train/validation 的行数、数组形状和 CSV 列名已读取核对。Test �
 
 本轮复用 `vb`，没有安装、升级或删除依赖。SPEC 确认后，依据实际实现生成依赖声明与干净环境复现流程；不把整个通用环境直接作为项目 requirements。
 
-## 共享 server：SSH 可用，训练环境待准备
+## 旧外部共享 server：已被用户替换
 
 连接信息保存在本地 `2.server_hpc.txt`。密码未进入受版本管理的材料。
 
@@ -65,7 +67,7 @@ Train/validation 的行数、数组形状和 CSV 列名已读取核对。Test �
 
 本次 server 与 HPC 首次连接采用会话内 TOFU，未向用户全局 `known_hosts` 写入记录；尚无带外主机指纹核对。server 协商主机公钥的首见指纹为 `SHA256:2vd1ITyl6TVjRcCG5kBlXprj0jYesX3oAYKul5jIINo`。后续自动连接应先确认并固定可信主机公钥。
 
-## HPC：网络与 SSH 可达，认证未通过
+## HPC：首次认证检查，结论已更正
 
 按[官方一二期登录文档](https://docs.hpc.hkust-gz.edu.cn/docs/hpc12/connection)和[三期登录文档](https://docs.hpc.hkust-gz.edu.cn/docs/hpc3/connection)，分别测试：
 
@@ -73,9 +75,9 @@ Train/validation 的行数、数组形状和 CSV 列名已读取核对。Test �
 - `hpc2login.hpc.hkust-gz.edu.cn`
 - `hpc3login.hpc.hkust-gz.edu.cn`
 
-三处均完成 SSH 握手，但使用 `1.group_HPC.txt` 中的凭据进行密码认证均返回 `Authentication failed`。每个入口只尝试一次，未继续重复登录。文件格式已检查，可以解析账号与密码。
+三处均完成 SSH 握手，但首次检查错误地将 group 的 IP 字段拼入密码，并把 group 账号用于学校入口，因此当时的 `Authentication failed` 不能判断任何一个正确环境是否可用。
 
-尚不能确定是凭据、账号开通状态、对应集群还是认证方式的问题。因此**HPC 目前不能作为已验证的执行环境**；未能查询 Slurm 分区、GPU 型号、账号 association/QOS、剩余配额、存储或作业提交权限。需要有效认证条件后再检查，届时先查询资源与账户权限，再做短时作业验证。
+更新连接资料并正确解析后，group SSH、学校门户与 SSH 均已成功。学校 Slurm 分区、GPU、账号 association/QOS 与提交权限已检查，具体结果及短作业记录见 [HPC 对比](hpc-comparison.md)。个人存储配额、正式训练环境及收费政策仍待确认。
 
 官方三期文档还说明存在外网访问限制，并提供校内软件镜像与环境迁移方案；若未来采用三期，依赖与权重分发也需要单独准备。参考：[三期用户手册](https://docs.hpc.hkust-gz.edu.cn/docs/hpc3/)。
 
