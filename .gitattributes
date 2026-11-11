@@ -1,6 +1,7 @@
 * text=auto
 *.py text eol=lf
 *.sh text eol=lf
+*.sbatch text eol=lf
 # Preserve course data bytes, including line endings and text whitespace.
 final_project_tasks/**/*.csv -text
 final_project_tasks/**/*.npy binary

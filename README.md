@@ -2,18 +2,19 @@
 
 AIAA3102 Final Project 工作区。目标是开发一个面向表格、文本和图像分类任务的通用 Agent，自主分析数据、提出方案、执行实验、依据验证结果改进，并交付可运行的预测方案。
 
-当前阶段：**已完成材料与环境检查，等待开发 SPEC；尚未实现 SuperAgent。**
+当前阶段：**学校 HPC 基础训练环境已配置，CUDA 与小规模训练验证通过；等待开发 SPEC，尚未实现 SuperAgent。**
 
 ## 项目材料
 
 - [课程要求](<docs/AIAA3102 - Final Project - Full Assignment Requirements (1).md>)：课程约束与交付标准。
 - [环境与开发准备记录](docs/workspace-readiness.md)：本机、server、HPC、API 的实测结果与开发建议。
 - [Group 与学校 HPC 对比](docs/hpc-comparison.md)：更新连接资料后的正确登录结果、资源、申请测试与环境建议；远程环境以此为准。
+- [学校 HPC 训练环境](docs/hpc-training.md)：已验证的环境路径、正常排队命令、GPU UUID 绑定与实测结果。
 - `final_project_tasks/`：课程提供的两个任务、原始数据和任务说明；当前数据总量约 3 MB，随 private 仓库保存。
 - `scripts/check_environment.py`：本机环境检查入口。
 - `AGENTS.md`：后续开发 Agent 的项目入口与既有决定。
 
-收到 SPEC 后放入 `docs/`，再确定架构、依赖和统一执行入口。当前没有应用安装或训练命令。
+收到 SPEC 后放入 `docs/`，再确定 Agent 架构、依赖和统一执行入口。基础训练环境的依赖输入为 `requirements-hpc.txt`，已验证的完整版本为 `requirements-hpc.lock.txt`；安装与训练检查入口见 `scripts/hpc/prepare_and_test.sbatch`。
 
 ## 已验证的本机环境
 

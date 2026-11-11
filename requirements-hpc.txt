@@ -1,0 +1,12 @@
+# Baseline training stack; the SuperAgent dependencies await SPEC.
+--index-url https://nexus.hpc.hkust-gz.edu.cn/repository/pypi-hkust/simple
+# The official Linux PyPI torch 2.6.0 wheel includes CUDA 12.4 dependencies.
+torch==2.6.0
+torchvision==0.21.0
+numpy==2.3.5
+pandas==2.3.3
+scikit-learn==1.7.1
+catboost==1.2.10
+lightgbm==4.6.0
+xgboost==3.2.0
+transformers==4.57.6

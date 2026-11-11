@@ -2,6 +2,8 @@
 
 检查日期：2026-11-11，Asia/Singapore。GPU 占用与共享存储容量为检查时快照。
 
+**后续进展：已决定优先使用学校 HPC，并完成实际 GPU 训练验证。** 成功作业 `13847157` 在 A40 上完成 CUDA、ResNet18 反向传播、10 epochs 合成分类训练和 checkpoint 重载，退出码为 0。环境已保存在 SSD，GPU 已释放。配置、关键修正及运行入口见 [学校 HPC 训练环境](hpc-training.md)。下文保留资源选型时的检查记录。
+
 ## 资料修正
 
 用户更新了 `2.server_hpc.txt`：当前学校 HPC 入口是 `https://login.hpc.hkust-gz.edu.cn/appform/login`，使用该文件中的课程账号。此前外部共享单卡 A6000 server 的检查结果不再代表当前候选环境。
