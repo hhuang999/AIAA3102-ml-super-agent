@@ -38,6 +38,8 @@ squeue -u "$USER"
 
 批作业默认在 `debug` 分区正常排队，申请一张 GPU、8 CPU、32GB RAM，最多运行 30 分钟。该时限从分配后开始计时，不是排队超时。安装、验证结束后批脚本退出并释放资源。后续单纯重跑验证时，已安装依赖会复用，可用 `sbatch --time=00:05:00 ...` 缩短运行时限。
 
+学校将 debug 定位为代码调试免费试用。正式 ML Agent 长跑应选择常规队列，避免将正式实验拆成连续 debug 作业。2026-11-12 实测提交规则还要求每张 GPU 最多8 CPU；进一步的资源与费用比较见 [ML Agent 资源方案](resources-for-ml-agent.md)。
+
 需要常规 A800 队列时，在同一 `sbatch` 命令中同时覆盖 `--partition=i64m1tga800u --qos=i64m1tga800u`；A40 常规队列对应 `i64m1tga40u`。学校提交入口会检查 partition/QOS 组合，直接提交公共 QOS `gpu16` 曾被拒绝，因此默认脚本采用匹配的 `debug` 组合。
 
 `/opt/slurm/profile.slurm` 引用可能尚未设置的环境变量，应先加载，再开启 shell 的 `set -u`。批脚本本身不需要重新加载该 Slurm profile。

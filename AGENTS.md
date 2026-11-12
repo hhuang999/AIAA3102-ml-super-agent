@@ -18,6 +18,7 @@
 - GPU 作业中若 NVML 仅暴露一张卡，将 `CUDA_VISIBLE_DEVICES` 设为该卡 UUID；本次 Slurm 节点级数字编号与进程内编号不一致，导致未经此处理的 CUDA 初始化失败。复用 `scripts/hpc/prepare_and_test.sbatch` 的绑定逻辑，保留资源分配边界。
 - 成功验证作业 `13847157` 在 A40 上以 `COMPLETED / 0:0` 结束，矩阵计算、ResNet18 反向、10 epochs 合成分类训练、checkpoint 重载和训练库导入全部通过。GPU 已释放，环境与结果保留；见 `docs/hpc-validation-result.json`。
 - 环境准备默认 `debug` 分区及同名 QOS，最多 30 分钟。长作业应同时指定匹配的常规 partition/QOS；常规队列可能等待较久，个人存储配额与费用政策尚未完全核实。
+- 2026-11-12 只读校验确认学校提交规则为每张 GPU 最多8 CPU；1 GPU / 16 CPU会被拒绝。MLEvolve原配置的21 CPU须按实际Slurm分配调整。debug只供代码调试；正式Agent建议在一次常规GPU作业内连续运行，资源、费用及队列预测见 `docs/resources-for-ml-agent.md`。
 - 本轮通过门户创建的 MIG 测试环境 `aiaa3102-ml-preflight-1111`（99261）已停止；其他已有环境保持原状。此前外部共享单卡 server 和错误解析凭据所得的认证结论已过时。
 - 课程 API 的模型列表和最小 Qwen 调用通过。模型发布时间及官方历史价格仍待核实，正式选型依 SPEC 进行。
 
