@@ -1,51 +1,80 @@
-# AIAA3102 Machine Learning SuperAgent
+# SuperAgent
 
-AIAA3102 Final Project 工作区。目标是开发一个面向表格、文本和图像分类任务的通用 Agent，自主分析数据、提出方案、执行实验、依据验证结果改进，并交付可运行的预测方案。
+SuperAgent is an autonomous agent that develops classification models. Given a task directory (a task
+description, training data and unlabeled test data), it writes complete modelling scripts, runs them, reads
+the results, decides what to try next, and returns the best solution together with a full record of every
+decision. It handles binary and multi-class classification on tabular, text and image data.
 
-当前阶段：**学校 HPC 基础训练环境已配置，CUDA 与小规模训练验证通过；等待开发 SPEC，尚未实现 SuperAgent。**
+The repository has two independent projects:
 
-## 项目材料
+| Project | Purpose |
+|---|---|
+| [`core/`](core/) | The agent (`superagent`): search, code generation, execution, assessment, resource control, final result |
+| [`adapter/`](adapter/) | Connects the agent to task sources and evaluation (`superagent_adapter`): task directories, runs, grading, batch runs, cost recomputation, run analysis, Colab launchers |
 
-- [课程要求](<docs/AIAA3102 - Final Project - Full Assignment Requirements (1).md>)：课程约束与交付标准。
-- [环境与开发准备记录](docs/workspace-readiness.md)：本机、server、HPC、API 的实测结果与开发建议。
-- [Group 与学校 HPC 对比](docs/hpc-comparison.md)：更新连接资料后的正确登录结果、资源、申请测试与环境建议；远程环境以此为准。
-- [学校 HPC 训练环境](docs/hpc-training.md)：已验证的环境路径、正常排队命令、GPU UUID 绑定与实测结果。
-- [ML Agent 资源方案](docs/resources-for-ml-agent.md)：MLEvolve 类 Agent 的资源建议、每卡CPU限制、排队测算和公开费用。
-- `final_project_tasks/`：课程提供的两个任务、原始数据和任务说明；当前数据总量约 3 MB，随 private 仓库保存。
-- `scripts/check_environment.py`：本机环境检查入口。
-- `AGENTS.md`：后续开发 Agent 的项目入口与既有决定。
+The adapter uses the agent only through its command line.
 
-收到 SPEC 后放入 `docs/`，再确定 Agent 架构、依赖和统一执行入口。基础训练环境的依赖输入为 `requirements-hpc.txt`，已验证的完整版本为 `requirements-hpc.lock.txt`；安装与训练检查入口见 `scripts/hpc/prepare_and_test.sbatch`。
+## Data flow
 
-## 已验证的本机环境
-
-Windows / Conda `vb` / Python 3.12.11 / RTX 4060 Laptop 8GB。PowerShell 下直接使用解释器，避免默认 `python` 指向另一个安装：
-
-```powershell
-& 'D:\anaconda\envs\vb\python.exe' scripts/check_environment.py
-& 'D:\anaconda\envs\vb\python.exe' scripts/check_environment.py --check-cuda --check-data
+```
+external task (e.g. an MLE-bench competition)
+   │  adapter: prepare            public files → task directory; isolation check against the answers
+   ▼
+task_dir/ ─ description.md, data/ (training data, unlabeled test data, sample_predictions.csv)
+   │  adapter: run  →  python -m superagent.run --task-dir ... --output-dir ...
+   ▼
+core
+   ├─ startup     prepare data, clean the description, metric direction, data preview, method catalog,
+   │              hardware detection, controller
+   ├─ search      worker threads share one search tree; each step:
+   │                select a node (tree_walk / elite_pick / synthesis trigger) → choose an operator
+   │                (draft, refine, repair, retrospect, borrow, synthesis) → step limits from the controller
+   │                → plan and code (LLM) → code review → smoke run → full run → assessment
+   │                (score marker, prediction format and content, validation files, leak check)
+   │                → per-step reward → bookkeeping
+   └─ finalize    ensembles of top predictions → metric identified from validation files →
+                  primary result chosen on validation data → report with diagnostics → status
+   ▼
+output_dir/ ─ final/ (primary result), best/, top/, ensemble/, logs/, report/, status.json, runs/
+   │  adapter: grade / analyze / cost
+   ▼
+scores against held-out answers, run analysis, recomputed cost
 ```
 
-脚本只检查 train/val 的结构，不读取测试集内容。`--check-cuda` 会执行一次小型 GPU 运算。后续依据 SPEC 声明项目实际依赖；当前环境不是最终可复现的依赖锁定文件。
+## Modules
 
-本机 `conda.exe` 在当前 shell 中出现启动错误，但以下入口已可用：
+| Module | Role |
+|---|---|
+| `core/superagent/run.py` | Command line, startup, finalize |
+| `core/superagent/search.py`, `selection.py`, `scheduling.py`, `chain.py` | Search loop, node selection, operator choice, plateaus, synthesis trigger, chains and rewards |
+| `core/superagent/operators.py`, `planner.py`, `codegen.py`, `patching.py`, `prompts/` | The six operators, structured plans, code generation, patches, prompt wording |
+| `core/superagent/review.py`, `executor.py`, `assessment.py`, `checks.py` | Pre-run review, script execution with smoke runs, result assessment |
+| `core/superagent/metrics.py`, `final.py`, `ensemble.py` | Validation files, metric identification, validated primary result, ensembles |
+| `core/superagent/control/` | Controller: script time budgets, step admission, cost cap, GPU memory hints, control log |
+| `core/superagent/experience.py`, `bookkeeping.py`, `report.py` | Experience store, best/top/status files, run summary and diagnostics |
+| `core/superagent/llm/` | LLM gateway: retries, structured output, call log, cost |
+| `adapter/superagent_adapter/common/` | Task directory and isolation check, Core command line, submissions, cost recomputation |
+| `adapter/superagent_adapter/mlebench/` | Grading with the MLE-bench grader |
+| `adapter/superagent_adapter/batch.py`, `analysis.py`, `cli.py` | Batch runs, run analysis, command line |
+| `adapter/launchers/colab/` | Running on Google Colab |
 
-```powershell
-& 'D:\anaconda\python.exe' -m conda env list
+## Quick start
+
+```bash
+cd core && pip install -r requirements.txt && pip install -e .
 ```
 
-## 本地配置与 Git
+```bash
+python examples/make_example_tasks.py --out example_tasks
+```
 
-私有远程仓库：[hhuang999/aiaa3102-ml-super-agent](https://github.com/hhuang999/aiaa3102-ml-super-agent)。使用已有 GitHub SSH 身份同步；GitHub CLI 的现有 token 未通过鉴权。
+```bash
+python -m superagent.run --task-dir example_tasks/tabular/task --output-dir outputs/tabular --time-limit-secs 1800 --higher-is-better true
+```
 
-`.env.example` 仅说明可配置的变量。现有 `.env`、两份连接凭据及 `docs/course-api-access.md` 保留在本机并由 `.gitignore` 排除。运行产物、模型权重和临时检查文件也不进入 Git。Git clone 后需要单独配置凭据。
+The LLM key is read from the environment or a `.env` file in the start directory (see `core/.env.example`).
+See [`core/README.md`](core/README.md) and [`adapter/README.md`](adapter/README.md) for details.
 
-## 开发必须保留的课程约束
+## License
 
-- 相同最终版本处理所有任务，以数据特点与实验结果决策，不以任务名称分发人工预制方案。
-- 正式结果来自完整自主运行；运行中由 Agent 决定实验和最终模型。
-- 测试集仅供最终评估，训练、调参和模型选择使用训练集与验证集。
-- 每项评估任务的全部 LLM 调用合计预算不超过人民币 20 元。按 2026-10-21 官方标准价格计费，保存各 Agent 的输入/输出 token 与成本记录。
-- 仅使用在 2026-10-21 当日或之前正式发布、具备官方标准 API 定价的 Qwen / DeepSeek 模型。API 可调用不代表已经核实课程适用性。
-
-详细要求以课程原文及后续 SPEC 为准。
+MIT, see [LICENSE](LICENSE).

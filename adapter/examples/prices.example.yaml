@@ -1,0 +1,7 @@
+# Price table for `superagent_adapter.cli cost`. Replace the values with the official standard prices that
+# apply to the evaluation (per 1M tokens, without cache discounts). Output tokens include reasoning tokens.
+currency: CNY
+models:
+  deepseek-flash: {input_per_million: 2.0, output_per_million: 8.0}
+embeddings:
+  Qwen/Qwen3-Embedding-0.6B: {per_million: 0.5}
