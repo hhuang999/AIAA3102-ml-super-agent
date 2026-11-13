@@ -1,0 +1,283 @@
+{
+  "date": "2026-11-13",
+  "adapter_version": "0.3.0",
+  "core_package_version": "0.7.1",
+  "core_interface": "1.1",
+  "core_baseline_commit": "41c28bc192478c70903e48c5d39d4577cd83bd78",
+  "windows_tests": {
+    "passed": 98,
+    "skipped": 4,
+    "total": 102
+  },
+  "linux_tests": {
+    "passed": 101,
+    "skipped": 1,
+    "total": 102
+  },
+  "skip_reasons": [
+    "Existing optional MLE-bench prepared-data integration test on both OSes",
+    "Three link tests skipped on Windows and passed on Linux"
+  ],
+  "offline_scenarios": {
+    "windows": [
+      {
+        "mode": "single",
+        "returncode": 0,
+        "valid_solution": true,
+        "partial": false,
+        "selected_result": {
+          "source": "final",
+          "kind": "single",
+          "method": "single",
+          "metric": null,
+          "validation_score": null,
+          "node_ids": [
+            "fixture11-node-1"
+          ],
+          "reason": "only one solution available",
+          "members_with_artifacts": 0,
+          "member_count": 1
+        },
+        "consistency": "consistent",
+        "report_mode": "writer_human_review_required"
+      },
+      {
+        "mode": "ensemble",
+        "returncode": 0,
+        "valid_solution": true,
+        "partial": false,
+        "selected_result": {
+          "source": "final",
+          "kind": "ensemble",
+          "method": "top3",
+          "metric": "accuracy",
+          "validation_score": 1.0,
+          "node_ids": [
+            "fixture11-node-1",
+            "fixture11-node-2",
+            "fixture11-node-3"
+          ],
+          "reason": "ensemble beat the single best solution on both validation halves",
+          "members_with_artifacts": 0,
+          "member_count": 3
+        },
+        "consistency": "consistent",
+        "report_mode": "writer_human_review_required"
+      },
+      {
+        "mode": "partial",
+        "returncode": 1,
+        "valid_solution": true,
+        "partial": true,
+        "selected_result": {
+          "source": "best_partial",
+          "kind": "single",
+          "method": "single",
+          "metric": "accuracy",
+          "validation_score": 0.75,
+          "node_ids": [
+            "fixture11-node-1"
+          ],
+          "reason": "Core stopped before finalization; retained its best validated single result"
+        },
+        "consistency": "consistent",
+        "report_mode": "writer_human_review_required"
+      },
+      {
+        "mode": "novalid",
+        "returncode": 2,
+        "valid_solution": false,
+        "partial": true,
+        "selected_result": null,
+        "consistency": "not_verifiable",
+        "report_mode": "writer_human_review_required"
+      },
+      {
+        "mode": "summaryconflict",
+        "returncode": 0,
+        "valid_solution": true,
+        "partial": false,
+        "selected_result": {
+          "source": "final",
+          "kind": "ensemble",
+          "method": "top3",
+          "metric": "accuracy",
+          "validation_score": 1.0,
+          "node_ids": [
+            "fixture11-node-1",
+            "fixture11-node-2",
+            "fixture11-node-3"
+          ],
+          "reason": "ensemble beat the single best solution on both validation halves",
+          "members_with_artifacts": 0,
+          "member_count": 3
+        },
+        "consistency": "conflict",
+        "report_mode": "writer_human_review_required"
+      }
+    ],
+    "linux": [
+      {
+        "mode": "single",
+        "returncode": 0,
+        "valid_solution": true,
+        "partial": false,
+        "selected_result": {
+          "source": "final",
+          "kind": "single",
+          "method": "single",
+          "metric": null,
+          "validation_score": null,
+          "node_ids": [
+            "fixture11-node-1"
+          ],
+          "reason": "only one solution available",
+          "members_with_artifacts": 0,
+          "member_count": 1
+        },
+        "consistency": "consistent",
+        "report_mode": "writer_human_review_required"
+      },
+      {
+        "mode": "ensemble",
+        "returncode": 0,
+        "valid_solution": true,
+        "partial": false,
+        "selected_result": {
+          "source": "final",
+          "kind": "ensemble",
+          "method": "top3",
+          "metric": "accuracy",
+          "validation_score": 1.0,
+          "node_ids": [
+            "fixture11-node-1",
+            "fixture11-node-2",
+            "fixture11-node-3"
+          ],
+          "reason": "ensemble beat the single best solution on both validation halves",
+          "members_with_artifacts": 0,
+          "member_count": 3
+        },
+        "consistency": "consistent",
+        "report_mode": "writer_human_review_required"
+      },
+      {
+        "mode": "partial",
+        "returncode": 1,
+        "valid_solution": true,
+        "partial": true,
+        "selected_result": {
+          "source": "best_partial",
+          "kind": "single",
+          "method": "single",
+          "metric": "accuracy",
+          "validation_score": 0.75,
+          "node_ids": [
+            "fixture11-node-1"
+          ],
+          "reason": "Core stopped before finalization; retained its best validated single result"
+        },
+        "consistency": "consistent",
+        "report_mode": "writer_human_review_required"
+      },
+      {
+        "mode": "novalid",
+        "returncode": 2,
+        "valid_solution": false,
+        "partial": true,
+        "selected_result": null,
+        "consistency": "not_verifiable",
+        "report_mode": "writer_human_review_required"
+      },
+      {
+        "mode": "summaryconflict",
+        "returncode": 0,
+        "valid_solution": true,
+        "partial": false,
+        "selected_result": {
+          "source": "final",
+          "kind": "ensemble",
+          "method": "top3",
+          "metric": "accuracy",
+          "validation_score": 1.0,
+          "node_ids": [
+            "fixture11-node-1",
+            "fixture11-node-2",
+            "fixture11-node-3"
+          ],
+          "reason": "ensemble beat the single best solution on both validation halves",
+          "members_with_artifacts": 0,
+          "member_count": 3
+        },
+        "consistency": "conflict",
+        "report_mode": "writer_human_review_required"
+      }
+    ]
+  },
+  "wheel_sha256": "f53695e2d8ae8fdcce21274b4ad8a8de99d19f5b74116534d1da0baa3f4a7076",
+  "wheel_source_files_verified": 24,
+  "evidence_sha256": {
+    "windows-tests-final.log": "0073b456c840d4a0b3dd8207bac9c136116ede5b44b7d8b5c9c281637dd53bc4",
+    "linux-tests-final.log": "e22e05675da76db37050da73f008cffcdcebe2128e267290397cc6909f077817",
+    "wheel-verification.json": "026fea31781e2d7818f149386ad21bfd8ca0297152a0aa8029f30719a0e85897",
+    "course-preparation-receipt.json": "18f5c85ec53a8e89b46c93323176f4962353e4c2d4b756405f42d475bb51b146",
+    "review-regression-before.log": "43f85f5f46eeba4fbd7c5d7c5a95bd2b62b70fc268cdfcdc636b0180f7fdf89f",
+    "review-regression-after.log": "0ca1f5dccd7ed2e998e628a7c14c94fa88e102483a0fa0b98b4d26663d4a1fe4",
+    "vote-regression-before.log": "cbadca77f4e56d9015b80639ee80c78de43949ad19e5b0d2429741d47f1d4868",
+    "vote-regression-after.log": "36739a05f008a9231b0f59cb9b587fa28c2c5e5bb8aecc31c771f9a5bae1dab0"
+  },
+  "course_tasks": [
+    {
+      "task_id": "headlines_ctr_clean",
+      "rows": {
+        "train": 8301,
+        "val": 940,
+        "test": 3232
+      },
+      "manifest_sha256": "f5f3a4902690be40082d349793f4109d7e3f4599615024fc886c1d528cf1e033",
+      "source_hashes": {
+        "train.csv": "cf728ca87cc5f187cae90b86a38406ba2ef981601cc662a6815b429bee748d0c",
+        "val.csv": "155b4c658c5308af5af5db38009c513d2888a13ea981c2471102cf00db056a14",
+        "test.csv": "d3a4e3977803861d60127b919babc77e07aa6fe3ffb06020c57f7ab1828ac300"
+      },
+      "public_hashes": {
+        "data/sample_predictions.csv": "fe5d9f20d96f0974c65babff15a96e145abed13dd028c3e3ebf8c1af1b9f39c0",
+        "data/test.csv": "c379399a0cb37b580cf29be0cbe7beb85d0833214936d9be4bf84a18b65473d8",
+        "data/train.csv": "176215188ee2b41f1855f6547ffdbbb74f27734a5f7713809397cf587e94f351",
+        "data/val.csv": "52f180ae7869d9b2f64972f35a0fe9d3b00b25bcb3d8311e0fdff07133fb4a14",
+        "description.md": "0d186782dcb745761fb09d4c735fcdaedfa14136a0d3ee6976d77ba04ae54c58"
+      },
+      "row_order_features_and_labels_verified": true
+    },
+    {
+      "task_id": "in_vehicle_coupon_recommendation",
+      "rows": {
+        "train": 8117,
+        "val": 2030,
+        "test": 2537
+      },
+      "manifest_sha256": "cf5fd558cee8b75ecc3196ae944d836c43f8e9589844ef7af1b55ff3f3c1346a",
+      "source_hashes": {
+        "C_train.npy": "abd27e72fd8df1e5ddbe8843a7139d6d5190414acb1a861e886df91394c88ff7",
+        "y_train.npy": "d5979f4acf17fef499e0380d7bea415f254690bad469320e47b5d4edcf76c503",
+        "C_val.npy": "55a78d33a2ae4e4adb62ff4129cb2702a71fffb68b20541a2f89fd8e1ead4c55",
+        "y_val.npy": "f700e343250fae2f441adf84ae2c7aef85e25be05ba2019c184e718347b9178a",
+        "C_test.npy": "f75d06aef6f78e0a0dd864ed6fda00a4a9b578ecfccf11751d773c1d5fccca75",
+        "y_test.npy": "eff1b2c4cd393c339941da34c9980b5a0af9aa6983f2d3f9c2b8502a757b3492"
+      },
+      "public_hashes": {
+        "data/sample_predictions.csv": "8e846e8bdd8c5238d36d752fac22298bd95eab02d1639d79f6d9523a7dec682c",
+        "data/test.csv": "3025669c6868e4df167f5ede44c8cc0661bc8341a3823263a18871dd0bb08374",
+        "data/train.csv": "851465929e397dfc6dfe90b1f3cd2350c58a2a51be3d39b8254154a994af83b7",
+        "data/val.csv": "f3001c0be0f9e81571361b5fdbcef861782adaea29486b6c4287e2e13750ba9a",
+        "description.md": "5db69cb2d73144b280ff46040b2e4d0684a5d9c17d34e454a78c2677f39064fd"
+      },
+      "row_order_features_and_labels_verified": true
+    }
+  ],
+  "real_llm_calls": 0,
+  "model_training_runs": 0,
+  "official_scoring_runs": 0,
+  "real_core_search_exercised": false,
+  "static_preflight_only": true
+}

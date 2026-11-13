@@ -10,7 +10,7 @@ The repository has two independent projects:
 | Project | Purpose |
 |---|---|
 | [`core/`](core/) | The agent (`superagent`): search, code generation, execution, assessment, resource control, final result |
-| [`adapter/`](adapter/) | Connects the agent to task sources and evaluation (`superagent_adapter`): task directories, runs, grading, batch runs, cost recomputation, run analysis, Colab launchers |
+| [`adapter/`](adapter/) | Connects the agent to task sources and evaluation (`superagent_adapter`): task directories, runs, grading, batch runs, cost recomputation, run analysis, Colab launchers, course delivery and Report Agent |
 
 The adapter uses the agent only through its command line.
 
@@ -78,3 +78,9 @@ See [`core/README.md`](core/README.md) and [`adapter/README.md`](adapter/README.
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+## Course integration
+
+The course workflow is integrated into the existing Adapter package, with explicit Core 1.1 support
+and legacy 0.1 regression coverage. See [course instructions](adapter/docs/COURSE_ADAPTER.md)
+and [offline verification](adapter/docs/COURSE_ACCEPTANCE.md). The Core implementation is unchanged.

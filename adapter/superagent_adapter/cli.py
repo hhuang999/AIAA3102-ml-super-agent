@@ -34,6 +34,7 @@ def _bool(v: str) -> bool:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="superagent_adapter")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("course", help="course preparation, checked delivery, final evaluation and Report Agent")
     p = sub.add_parser("prepare", help="build a Core task directory from a public split and check isolation")
     p.add_argument("--public", required=True, type=Path)
     p.add_argument("--private", required=True, type=Path)
@@ -76,6 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "course":
+        from .course.cli import main as course_main
+        return course_main(argv[1:])
     a = build_parser().parse_args(argv)
     if a.cmd == "prepare":
         build_task_dir(a.public, a.task_dir)

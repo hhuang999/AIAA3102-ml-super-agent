@@ -21,3 +21,12 @@ cache/
 /2.server_hpc.txt
 secrets.env
 .review-tmp*/
+
+# Local course data and verification runs
+/evidence/
+/adapter/evidence/
+/adapter/prepared/
+/adapter/outputs/
+/adapter/private/
+/adapter/artifacts/
+/adapter/build/
