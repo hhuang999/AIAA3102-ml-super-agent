@@ -2,7 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .common import read_json, write_json
+from .common import read_json
 from .prepare import prepare_task
 from .runner import launch_core, PreflightError
 from .collect import collect_result, evaluate_final
@@ -43,6 +43,8 @@ def main(argv=None):
         if name == 'run':
             p.add_argument('--seed', type=int, default=42)
             p.add_argument('--evaluate-final', action='store_true')
+            p.add_argument('--generate-report', action='store_true',
+                           help='Explicitly enable the optional legacy report draft')
             p.add_argument('--report-writer-config')
     p = sub.add_parser('report')
     p.add_argument('--run-dir', required=True)
@@ -64,11 +66,14 @@ def main(argv=None):
         result = collect_result(args.task_dir,args.private_dir,args.run_dir)
         if args.evaluate_final and result['collection']['valid_solution']:
             result = evaluate_final(args.task_dir,args.private_dir,args.run_dir)
-        try:
-            report_result = report(result,Path(args.run_dir)/'report',args.report_writer_config)
-            result['outcome'] = write_outcome(args.run_dir,result,report_result=report_result)
-        except (OSError, ValueError, TypeError) as exc:
-            result['outcome'] = write_outcome(args.run_dir,result,report_error=f'报告生成失败 ({type(exc).__name__})')
+        if args.generate_report or args.report_writer_config:
+            try:
+                report_result = report(result,Path(args.run_dir)/'report',args.report_writer_config)
+                result['outcome'] = write_outcome(args.run_dir,result,report_result=report_result)
+            except (OSError, ValueError, TypeError) as exc:
+                result['outcome'] = write_outcome(args.run_dir,result,report_error=f'报告生成失败 ({type(exc).__name__})')
+        else:
+            result['outcome'] = write_outcome(args.run_dir,result)
     elif args.action == 'collect':
         result = collect_result(args.task_dir,args.private_dir,args.run_dir)
         result['outcome'] = write_outcome(args.run_dir,result)

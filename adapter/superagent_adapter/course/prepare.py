@@ -80,6 +80,8 @@ def prepare_task(spec_path, source_dir, task_dir, private_dir):
     allowed = spec['classes']
     if len(allowed) < 2 or len(allowed) != len(set(allowed)) or any(type(v) is not int for v in allowed):
         raise ValueError('Declare at least two unique integer classes')
+    if type(spec.get('trusted_pickle', False)) is not bool:
+        raise ValueError('trusted_pickle must be an explicit boolean, not a string or number')
     choice = spec.get('final_choice', 'final' if version == '1.1' else 'best')
     if choice not in (('final',) if version == '1.1' else ('best', 'ensemble')):
         raise ValueError('Core 1.1 requires final; legacy 0.1 allows best or ensemble')

@@ -31,9 +31,12 @@ def launch_core(task_dir, private_dir, run_dir, *, config=None, seed=42, command
     extra_args = list(extra_args)
     if len(extra_args) % 2 or any(extra_args[i] not in permitted for i in range(0, len(extra_args), 2)):
         raise ValueError('Unsupported Core argument override')
-    for value in extra_args[1::2]:
-        if not str(value).isdigit() or int(value) <= 0:
-            raise ValueError('Resource overrides must be positive integers')
+    if len(set(extra_args[::2])) != len(extra_args[::2]):
+        raise ValueError('Duplicate Core argument override')
+    for name, value in zip(extra_args[::2], extra_args[1::2]):
+        minimum = 0 if name == '--num-gpus' else 1
+        if not str(value).isascii() or not str(value).isdigit() or int(value) < minimum:
+            raise ValueError('Resource overrides must be positive integers; num-gpus may be zero')
     check = preflight(task, private, run, config=config, execution_kind=execution_kind, command_prefix=command_prefix)
     if not check['ready']:
         raise PreflightError(check)

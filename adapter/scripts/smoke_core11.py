@@ -20,6 +20,8 @@ module_spec.loader.exec_module(helpers)
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--generate-report', action='store_true',
+                        help='Explicitly include the optional legacy mock report writer')
     args = parser.parse_args()
     root = args.output_dir.resolve()
     if root.exists():
@@ -41,8 +43,11 @@ def main():
                 return {'sections': [{'title': 'Offline fixture',
                                       'text': 'Synthetic integration only; zero real model calls, training runs, or formal scoring.',
                                       'evidence_refs': ['/collection/execution_kind']}]}
-            report = generate_report(evidence, run / 'report', writer)
+            report = generate_report(evidence, run / 'report', writer) if args.generate_report else None
             outcome = write_outcome(run, evidence, report_result=report)
+            if not args.generate_report:
+                assert outcome['report']['state'] == 'not_generated'
+                assert not (run / 'report').exists()
         valid = evidence['collection']['valid_solution']
         assert valid == (mode != 'novalid'), evidence['collection']
         if mode == 'ensemble':
@@ -58,7 +63,7 @@ def main():
                         'valid_solution': valid, 'partial': evidence['collection']['partial'],
                         'selected_result': evidence['collection'].get('selected_result'),
                         'consistency': evidence['consistency']['status'],
-                        'report_mode': report['mode'], 'outcome': outcome,
+                        'report_mode': report['mode'] if report else None, 'outcome': outcome,
                         'audit': audit})
     summary = {'execution_kind': 'fixture', 'real_llm_calls': 0, 'model_training_runs': 0,
                'formal_scoring_runs': 0, 'network_guard': True, 'modes': records,

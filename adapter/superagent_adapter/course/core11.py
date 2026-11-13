@@ -136,6 +136,11 @@ def collect_core11(core, destination, status, partial, sample, target, classes):
         if not inside_file(core, prefix + 'solution.py').read_text(encoding='utf-8').strip():
             raise ValueError('Missing final member full solution')
         pred = validate_predictions(inside_file(core, prefix + 'predictions.csv'), sample, target, classes)
+        if node == best_node:
+            if pred != best_pred:
+                raise ValueError('Final best-member predictions differ from the best result')
+            if inside_file(core, prefix + 'solution.py').read_bytes() != inside_file(core, 'best/solution.py').read_bytes():
+                raise ValueError('Final best-member script differs from the best script')
         seen_nodes.add(node); seen_dirs.add(directory); seen_ranks.add(rank)
         weights.append(weight); predictions.append(pred)
         _, raw_rows = read_csv(inside_file(core, prefix + 'predictions.csv'))
@@ -145,8 +150,6 @@ def collect_core11(core, destination, status, partial, sample, target, classes):
     if kind == 'single':
         if members[0]['node_id'] != best_node or predictions[0] != best_pred or primary != best_pred:
             raise ValueError('Single final result does not match the best solution')
-        if inside_file(core, 'final/members/' + members[0]['dir'] + '/solution.py').read_bytes() != inside_file(core, 'best/solution.py').read_bytes():
-            raise ValueError('Single final script differs from the best script')
     else:
         fmt = source.get('format')
         if not isinstance(fmt, dict) or fmt.get('id_col') != 'id' or fmt.get('pred_cols') != [target] or fmt.get('columns') != ['id', target] or fmt.get('copy_cols') != [] or fmt.get('strategy') not in ('vote', 'string_vote') or fmt.get('normalize') is not False:

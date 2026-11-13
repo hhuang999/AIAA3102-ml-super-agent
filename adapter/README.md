@@ -66,14 +66,16 @@ machine that runs the Core.
 pytest
 ```
 
-## Course tasks and Report Agent
+## Course tasks and delivery
 
 The course-specific workflow lives in `superagent_adapter.course` and is available through
 `python -m superagent_adapter.cli course ...` (or `python -m superagent_adapter.course ...`).
 It adds CSV/NPY preparation, immutable input checks, Core 1.1 final-result collection, private-label
-evaluation, run provenance, unified outcome records and an evidence-based Report Agent.
+evaluation, run provenance, unified outcome records and a file-location index for handoff.
+The team writes the course report; Report Agent development is paused. `course run` does not
+generate a report by default. The existing report entry remains available only when explicitly requested.
 The existing MLE-bench commands retain their behavior.
 
 See [course integration and usage](docs/COURSE_ADAPTER.md),
-[report design](docs/COURSE_REPORT_AGENT.md) and [offline acceptance](docs/COURSE_ACCEPTANCE.md).
+[historical report design](docs/COURSE_REPORT_AGENT.md) and [offline acceptance](docs/COURSE_ACCEPTANCE.md).
 Real model calls, training and official scoring were not run during this integration.

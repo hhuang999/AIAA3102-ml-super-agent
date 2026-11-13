@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 import shutil
 
@@ -195,7 +196,23 @@ def collect_result(task_dir, private_dir, run_dir):
 
 
 def evaluate_final(task_dir, private_dir, run_dir):
+    """Commit a score once, or recover its evidence update without scoring again."""
     task, private, run = Path(task_dir).resolve(), Path(private_dir).resolve(), Path(run_dir).resolve()
+    lock = run / 'adapter/final-evaluation.lock'
+    try:
+        handle = lock.open('x', encoding='utf-8')
+    except FileExistsError:
+        raise ValueError('Final evaluation lock exists; another evaluator or an interrupted process must be checked first') from None
+    try:
+        with handle:
+            handle.write(f'pid={os.getpid()}\n')
+            handle.flush()
+            return _evaluate_final_locked(task, private, run)
+    finally:
+        lock.unlink()
+
+
+def _evaluate_final_locked(task, private, run):
     m = verify_inputs(task, private)
     evidence = read_json(run / 'adapter/evidence.json')
     if evidence['evaluation']['status'] != 'not_requested':
@@ -204,10 +221,34 @@ def evaluate_final(task_dir, private_dir, run_dir):
         raise ValueError('No verified selected prediction to evaluate')
     if evidence['provenance']['task_manifest_sha256'] != digest(private / 'manifest.json'):
         raise ValueError('Task manifest changed after collection')
+    collection_path = inside_file(run / 'adapter', 'collection.json')
+    if read_json(collection_path) != evidence['collection']:
+        raise ValueError('Collection record differs from the evaluation evidence')
     for rel, sha in evidence['collection']['files_sha256'].items():
         if digest(inside_file(run / 'delivery', rel)) != sha:
             raise ValueError('Sealed delivery artifact changed')
     predictions = validate_predictions(run/'delivery/predictions.csv', task/m.get('prediction_template', 'data/sample_submission.csv'), m['task']['target'], m['task']['classes'])
+    binding = {'selected_before_scoring':True, 'final_choice':evidence['collection']['final_choice'],
+               'predictions_sha256':digest(run/'delivery/predictions.csv'),
+               'task_manifest_sha256':digest(private/'manifest.json'),
+               'collection_sha256':digest(collection_path),
+               'execution_kind':evidence['provenance']['execution_kind'], 'rows':len(predictions)}
+    marker = run / 'adapter/final-evaluation.json'
+    if marker.exists() or marker.is_symlink():
+        evaluation = read_json(inside_file(run / 'adapter', 'final-evaluation.json'))
+        if (not isinstance(evaluation, dict) or evaluation.get('status') != 'evaluated'
+                or any(evaluation.get(k) != v for k, v in binding.items())
+                or evaluation.get('selected_before_scoring') is not True
+                or type(evaluation.get('rows')) is not int or evaluation['rows'] <= 0
+                or type(evaluation.get('correct')) is not int
+                or not 0 <= evaluation['correct'] <= evaluation['rows']
+                or not finite_number(evaluation.get('test_accuracy'))
+                or abs(evaluation['test_accuracy'] - evaluation['correct']/evaluation['rows']) > 1e-12):
+            raise ValueError('Committed evaluation record is invalid or belongs to different evidence')
+        # The score was committed before the evidence write failed. Reuse it verbatim.
+        evidence['evaluation'] = evaluation
+        write_json(run / 'adapter/evidence.json', evidence)
+        return evidence
     fields, labels = read_csv(private / 'test_labels.csv')
     target = m['task']['target']
     if fields != ['id', target] or len(labels) != len(predictions) or len({r['id'] for r in labels}) != len(labels):
@@ -215,11 +256,8 @@ def evaluate_final(task_dir, private_dir, run_dir):
     if set(predictions) != {r['id'] for r in labels}:
         raise ValueError('Final label IDs differ from predictions')
     correct = sum(predictions[r['id']] == int(r[target]) for r in labels)
-    evaluation = {'status':'evaluated', 'test_accuracy':correct/len(labels), 'correct':correct, 'rows':len(labels),
-                  'selected_before_scoring':True, 'final_choice':evidence['collection']['final_choice'],
-                  'predictions_sha256':digest(run/'delivery/predictions.csv'),
-                  'execution_kind':evidence['provenance']['execution_kind']}
+    evaluation = {'status':'evaluated', 'test_accuracy':correct/len(labels), 'correct':correct, **binding}
     evidence['evaluation'] = evaluation
-    write_json(run / 'adapter/final-evaluation.json', evaluation)
+    write_json(marker, evaluation)
     write_json(run / 'adapter/evidence.json', evidence)
     return evidence

@@ -61,7 +61,7 @@ class Priority1Tests(unittest.TestCase):
         launch = read_json(self.run/'adapter/launch.json')
         self.assertEqual(launch['runtime_sha256'], digest(self.run/'adapter/runtime.json'))
         snapshot = read_json(self.run/'adapter/runtime.json')
-        self.assertEqual(snapshot['adapter']['version'], '0.3.0')
+        self.assertEqual(snapshot['adapter']['version'], '0.3.1')
         self.assertEqual(result['provenance']['runtime_snapshot'], snapshot)
         self.assertIsNone(snapshot['model'])
 

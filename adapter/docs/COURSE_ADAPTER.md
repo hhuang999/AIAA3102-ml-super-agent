@@ -1,7 +1,12 @@
-# Course Adapter and Report Agent — Core 1.1
+# Course Adapter — Core 1.1
+
+**Scope update, 2026-11-13:** the team writes the course report. Report Agent development is
+paused. The normal course workflow produces evidence, results and file locations without
+generating a report or invoking a report model. Existing report commands remain opt-in for
+compatibility; they are not a required delivery step.
 
 This module integrates the previously verified standalone course Adapter into the existing
-`superagent-adapter` distribution (0.3.0). The Core implementation is unchanged. New course
+`superagent-adapter` distribution (0.3.1). The Core implementation is unchanged. New course
 specifications select Core interface **1.1**; explicitly declared **0.1** specifications retain
 their legacy behavior and regression tests. Package version and interface version are different.
 
@@ -61,7 +66,9 @@ check does not prove model availability, dependency completeness or authenticati
 
 `course run` starts the real Core and therefore needs a separately agreed model/compute plan.
 It accepts the same task/private/run directories, plus `--core-config` and `--seed`.
-It generates a deterministic report unless an explicit `--report-writer-config` is supplied.
+It writes `adapter/outcome.json` with result states and a `files` index. It does not generate a
+report by default. `--generate-report` explicitly requests the existing deterministic draft;
+`--report-writer-config` also explicitly enables report generation and may call the configured model.
 Credentials are inherited through the environment; the launcher does not copy a secret `.env`
 file into the new run directory. The Core also supports its own cwd-based `.env` loading.
 
@@ -70,6 +77,19 @@ directory. `course evaluate-final` explicitly evaluates the sealed selected pred
 private labels. Evaluation is not automatic unless `course run --evaluate-final` is requested.
 Formal evaluation remains pending team approval. `formal_evaluation_eligible` stays false; the
 module does not certify a run as satisfying all course requirements.
+
+The `files` index locates the selected prediction CSV, selected member scripts, combination
+script, selection metadata, execution logs, runtime snapshot, collection evidence and (only
+after evaluation) final evaluation JSON. Invalid solutions have no deliverable prediction/script
+entries. These are absolute paths for the current run location, not a portable replay command.
+After moving a run, regenerate the outcome from its evidence to refresh locations.
+
+Evaluation holds an exclusive `adapter/final-evaluation.lock` and commits the score record before
+updating the evidence. If only the evidence write failed, a retry verifies the record's task,
+collection and prediction hashes and restores the evidence without recalculating the score.
+Malformed or mismatched existing records are never overwritten. An abrupt process kill can leave
+a lock: verify that no evaluator is active before manually removing that exact lock and retrying.
+This is crash recovery and same-account coordination, not protection against deliberate file edits.
 
 ```bash
 python -m superagent_adapter.cli course report \
@@ -89,6 +109,8 @@ and summary fields rather than pretending they follow the old `best_metric` sche
 
 - `final/` is the autonomous Core selection. The Adapter does not compare candidates on test labels.
 - Single final results must match the best single node, score, script and predictions.
+- Whenever an ensemble includes the best single node, that member's script and predictions must
+  also match `best/`; matching node IDs and scores alone is insufficient.
 - Ensemble results bind member identities, ranks, scores, weights, scripts and class-label outputs.
   The recorded combination is independently checked using Core's raw-string voting and member-order
   tie rule. Its exact format must have normalization disabled. This is a file check, not script execution.
@@ -124,8 +146,8 @@ The following remain marked provisional in manifests and reports:
 2. Private test labels are outside the input task directory on Assignment 1. Same-account path
    separation is not operating-system-enforced isolation; deployment policy remains to be agreed.
 3. Full scripts are accepted. An available model file does not itself establish inference-only support.
-4. Markdown/JSON drafts and review evidence are produced; the final course `report.pdf` still needs
-   the completed experiments and human review.
+4. Report writing belongs to the team. The optional historical Markdown/JSON generator is retained
+   but disabled by default; Adapter delivery consists of checked artifacts, file locations and results.
 
 ## Offline checks
 
@@ -143,3 +165,5 @@ The Core 1.1 fixture calls real bookkeeping, final selection and report builders
 nodes and synthetic arrays, a null gateway and a network guard. It never runs search or trains
 a model. The legacy smoke script remains for explicit 0.1 regression checks. See
 `COURSE_ACCEPTANCE.md` for the verified baseline and exact outcomes.
+The smoke script also skips the optional Report Agent by default; its historical mock-writer
+coverage can be explicitly requested with `--generate-report`.
