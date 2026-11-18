@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "superagent"
+version = "0.7.1"
+description = "Autonomous agent that develops classification models for a task directory"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "huggingface_hub>=0.24",
+    "numpy>=1.26",
+    "openai>=2.44,<3",
+    "pandas>=2.1",
+    "PyYAML>=6.0",
+    "tfrecord>=1.14.6",
+]
+
+[project.optional-dependencies]
+demo = ["scikit-learn>=1.4", "Pillow>=10.0"]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["superagent*"]
+
+[tool.setuptools.package-data]
+superagent = ["resources/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

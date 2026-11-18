@@ -1,0 +1,260 @@
+# SuperAgent default configuration.
+#
+# A user config file only needs the keys it wants to override; it is merged
+# into this file level by level. Precedence:
+#   command-line arguments and environment variables > user config file > this file.
+# Unknown keys and values of the wrong type are rejected at startup.
+
+run:
+  time_limit_seconds: 43200        # Total wall-clock budget for one run.
+  max_steps: 500                   # Maximum number of solution nodes (the root is not counted).
+  seed: 42                         # Seed for the agent's own random choices.
+  finalize_reserve_seconds: 300    # Time kept free at the end for wrapping up.
+  idle_backoff_seconds: 5          # Wait before selecting again when a step produced no node.
+  late_start_guard: 1.5            # Near the end, a new step starts only if the usable time left is at least this
+                                   # many times the median run time of the successful scripts so far (0 = off).
+
+resources:
+  num_gpus: 1                      # GPUs available to solution scripts (0 = none).
+  num_cpus: 8                      # CPU cores available to solution scripts.
+  parallel: 2                      # Number of scripts run at the same time (= worker threads).
+
+execution:
+  script_timeout_seconds: 7200     # Longest allowed run of one solution script.
+  draft_launch_stagger_seconds: 10 # Gap between launching the first drafts.
+  keep_artifacts_top_k: 5          # Keep saved model files for this many top solutions.
+  smoke_run: true                  # Run every script first with SUPERAGENT_SMOKE=1 on a tiny subset; skip the full run if it fails.
+  smoke_timeout_seconds: 180       # Time limit of the smoke run (a smoke run that times out does not stop the full run).
+
+llm:
+  base_url: "https://api.deepseek.com"   # OpenAI-compatible endpoint.
+  api_key_env: "DEEPSEEK_API_KEY"  # Name of the environment variable (or .env entry) holding the API key.
+  currency: "CNY"                  # Currency of the prices below (used in logs and reports only).
+  generation:                      # Used for writing plans and code.
+    model: "deepseek-flash"
+    thinking: "enabled"            # enabled | disabled
+    reasoning_effort: "high"       # low | high | max. Higher effort costs clearly more output tokens.
+    temperature: 1.0
+    max_output_tokens: 32768
+    cached_input_price_per_million: 0.04
+    input_price_per_million: 2.0   # Price per 1M input tokens (no cache discount applied).
+    output_price_per_million: 8.0  # Price per 1M output tokens (reasoning tokens included).
+  judgement:                       # Used for reading logs, reviews and other structured answers.
+    model: "deepseek-flash"
+    thinking: "disabled"
+    reasoning_effort: "high"
+    temperature: 1.0
+    max_output_tokens: 8192
+    cached_input_price_per_million: 0.04
+    input_price_per_million: 2.0
+    output_price_per_million: 8.0
+  request_timeout_seconds: 1200
+  stream: true
+  operation_extra_sends: 2
+  role_policy:
+    desc_cleaner: {max_output_tokens: 2048}
+    direction_judge: {max_output_tokens: 512}
+    planner.structured: {reasoning_effort: low, max_output_tokens: 16384}
+    planner.free: {max_output_tokens: 32768}
+    patch_coder: {reasoning_effort: low, max_output_tokens: 32768, recovery_max_output_tokens: 65536}
+    repair_coder: {reasoning_effort: low, max_output_tokens: 32768, recovery_max_output_tokens: 65536}
+    script_coder: {max_output_tokens: 65536, recovery_max_output_tokens: 131072}
+    draft_writer.data_prep: {reasoning_effort: low, max_output_tokens: 32768}
+    draft_writer.model_def: {reasoning_effort: low, max_output_tokens: 32768}
+    draft_writer.train_eval: {max_output_tokens: 32768}
+    draft_integrator: {max_output_tokens: 65536}
+    reviewer: {max_output_tokens: 8192, recovery_max_output_tokens: 16384}
+    result_reader: {max_output_tokens: 4096}
+    leak_checker: {thinking: enabled, reasoning_effort: high, max_output_tokens: 16384}
+    format_fixer: {max_output_tokens: 2048}
+  api_max_retries: 1              # Retries on network errors, server errors and rate limits.
+  api_retry_delay_seconds: 3
+  json_max_attempts: 2             # Attempts when a structured answer fails validation.
+  lower_effort_on_truncation: true # Retry with a lower reasoning effort when thinking used up the output limit.
+
+search:
+  initial_drafts: 3                # Drafts written at the start.
+  concurrent_initial_drafts: true  # Write the initial drafts at the same time instead of one after another.
+  max_drafts: 5                    # Maximum number of drafts under the root.
+  max_refinements_per_node: 3      # Maximum ordinary children of a successful node.
+  max_repairs_per_node: 1          # Maximum repair children of a failed node.
+  elite_max_children: 10           # Maximum children of a node chosen by elite_pick.
+  min_gain: 0.0001                 # Improvements below this do not count as progress.
+  max_no_gain: 3                   # A chain ends after this many attempts without progress.
+  chain_soft_switch: true          # Apply the tree_walk/elite_pick switch before every chain step as well.
+  reward_mode: "per_step"          # per_step: reward every evaluated node | chain_end: reward only when a chain ends.
+  repair_return_depth: 3           # Return to the root after this many failed repairs in a row.
+  max_repair_depth: 20             # Give up on a failure after this many failed repairs in a row.
+  explore:                         # Switching between tree_walk and elite_pick.
+    switch_start: 0.5
+    switch_end: 0.7
+    min_weight: 0.2
+  elite:                           # Candidate pool of elite_pick.
+    early_k: 5
+    early_per_branch: 3
+    late_k: 3
+    late_per_branch: 2
+  uct:                             # Upper-confidence-bound selection.
+    c_init: 1.414
+    c_min: 0.5
+    decay_per_step: 0.01
+    phase_ratios: [0.3, 0.7]
+  forced_return:                   # Periodically send long chains back to the root.
+    mid_start: 0.4
+    mid_every: 3
+    late_start: 0.8
+    late_prob: 0.5
+    recent_window: 4
+  top_list_size: 20                # Size of the top solution list.
+  top_per_branch: 5                # Maximum entries per branch in the top list.
+
+plateau:
+  enabled: true
+  branch_window: 3                 # Recent successful nodes checked for a branch plateau.
+  elite_branch_window: 6           # The same, for nodes chosen by elite_pick.
+  global_window: 4                 # Nodes without a new global best that count as a plateau.
+  count_failed_attempts: true      # Branch plateau: count failed attempts too (attempts since the branch best >= window).
+
+operators:
+  retrospect:
+    enabled: true
+    max_steps: 10                  # Trajectory length shown to the model.
+    min_steps: 2                   # Shorter trajectories fall back to refine.
+  borrow:
+    enabled: true
+    start_fraction: 0.5            # Allowed only after this fraction of the time budget.
+    probability: 0.3               # Chance of borrow (vs. retrospect) on a plateau.
+    per_branch: 2                  # References taken from each other branch.
+    max_refs: 5
+  synthesis:
+    enabled: true
+    max_count: 2
+    window: [0.5, 0.8333]          # Allowed only inside this fraction of the time budget.
+    min_branches: 2
+    min_ok_per_branch: 2
+    trigger_on_stagnation: true    # Start synthesis as soon as its conditions hold, before new drafts.
+    time_factor: 1.0               # Starts only if usable time >= factor x (typical non-script step time + typical script time).
+  escalation:                      # When to ask for larger changes.
+    ok_since_best: 2
+    all_since_best: 5
+
+codegen:
+  staged_drafting: true            # Write drafts in three stages, then integrate.
+  patch_mode: true                 # Improve solutions with search/replace patches.
+  patch_max_attempts: 3
+  extract_max_attempts: 3          # Attempts when no code can be extracted from a reply.
+
+review:
+  sensitive_effort: "low"            # off | low | high | max for changes to split, labels, metrics or predictions.
+  mode: "always"                   # always | risk (opt-in ablation)
+  enabled: true                    # Pre-run code review.
+  max_attempts: 3
+
+validation_rule:                   # Shared validation split rule for every solution.
+  split_seed: 42
+  validation_fraction: 0.2
+
+assessment:
+  score_tolerance: 0.000001
+  constant_ratio_threshold: 0.95   # Share of one value above which predictions look constant.
+  leak_check:
+    enabled: true
+    high_threshold: 0.999          # Higher-is-better scores at or above this trigger a leak check.
+    low_threshold: 0.000001        # Lower-is-better scores at or below this trigger a leak check.
+    jump_ratio: 0.2                # Also check when a score beats the previous best by this share of its size (0 = off).
+
+output_trim:
+  threshold: 5100                  # Run outputs longer than this are trimmed in prompts.
+  keep_each_side: 2500
+
+profiler:
+  max_preview_chars: 6000
+  min_image_files: 20
+  text_min_mean_chars: 30
+  text_min_unique_ratio: 0.5
+
+experience:
+  enabled: true
+  vector:
+    enabled: true                  # false = keyword search only.
+    backend: "local"               # local = load the model on this machine | api = call an embeddings endpoint.
+    model: "Qwen/Qwen3-Embedding-0.6B"   # local backend: model id on the model hub.
+    device: "cpu"                  # Keep training GPU free; opt in to cuda after profiling co-location.
+    api_model: "qwen3-embedding-0.6b"    # api backend: model name at the endpoint.
+    api_base_url: "https://aihubmix.com/v1"   # api backend: OpenAI-compatible embeddings endpoint.
+    api_key_env: "AIHUBMIX_API_KEY"  # api backend: environment variable (or .env entry) holding the key.
+    api_timeout_seconds: 60        # api backend: time limit of one request.
+    price_per_million: 0.5         # Accounting price per 1M embedded tokens (remote backend only).
+  planning: "evidence"             # evidence | two_stage | single
+  min_similarity: 0.35             # Tune cosine floor on labeled queries.
+  keyword_weight: 0.5
+  rrf_k: 60
+  candidates_per_list: 50
+  refine_top_k: 2
+  repair_top_k: 2
+
+pretrained:
+  mode: "catalog"                  # catalog | open | off
+  local_dir: "./pretrained_cache"  # Where fetch_models stores pretrained weights.
+  hub_endpoint: ""                 # Mirror endpoint; empty = default hub.
+  forbidden_patterns:              # Checked only when mode is off.
+    - "from_pretrained("
+    - "pretrained=True"
+    - "pretrained = True"
+    - "torch.hub.load"
+    - "hf_hub_download"
+    - "snapshot_download"
+    - "hf-hub:"
+    - "hf_hub:"
+    - "SentenceTransformer("
+    - "Weights.DEFAULT"
+    - "Weights.IMAGENET"
+    - "weights=\"IMAGENET"
+    - "weights='IMAGENET"
+    - "weights=\"DEFAULT\""
+    - "weights='DEFAULT'"
+    - "TabICLClassifier"
+    - "TabPFNClassifier"
+
+ensemble:
+  enabled: true
+  primary_size: 3
+  max_candidates: 6
+
+final:                             # The primary result in final/.
+  enabled: true
+  allow_ensemble: true             # An ensemble may be the primary result when validation favours it.
+  min_validation_rows: 50          # Fewest shared validation samples needed to compare ensembles.
+  member_overlap: 0.9              # Share of the best solution's validation samples another member must have.
+  min_gain: 0.0001                 # Gain over the single best solution required on each validation half.
+  greedy_rounds: 20                # Rounds of forward selection for the greedy ensemble.
+  tie_break: true                  # When the task metric ties on a half, probability predictions are compared by log loss.
+  tie_break_min_gain: 0.001        # Log loss reduction required on a tied half.
+  small_validation_rows: 200       # Below this many shared validation samples the report adds a warning.
+
+control:
+  adaptive:
+    shadow: false                  # Log adaptive alternatives alongside rules/static, without reserving them.
+    admission_quantile: 0.8
+    initial_script_seconds: 600
+    initial_other_seconds: 180
+    initial_operation_cost: 0.10   # Whole generated operation before comparable priced samples (in llm.currency).
+    max_rung: 3
+    explore_every: 4
+  controller: "adaptive"              # adaptive | rules | static | <module>:<Class> (a subclass of superagent.control.Controller).
+  time_allocation:                 # Splits the remaining time into steps of a planned size.
+    mode: "enforce"                # off | observe | enforce
+    target_nodes: 60               # Planned number of nodes for the whole run.
+    min_script_seconds: 300        # Smallest script budget while enough time is left.
+    tail_min_script_seconds: 120   # Near the end, a step starts only if at least this much script time is left.
+    llm_seconds_prior: 180         # Assumed generation time per step before any step has finished.
+    recent_steps: 8                # Number of recent steps used to estimate step times.
+  cost_cap:                        # Finishes the search before the recorded model cost passes a limit.
+    mode: "observe"
+    limit: 20.0                    # In the cap currency.
+    currency: "CNY"
+    rate_to_cap_currency: 1.0      # Cap-currency units per unit of llm.currency.
+    warn_fraction: 0.8             # A warning is logged once the cost passes this fraction of the limit.
+  resources:                       # GPU memory hints from the detected hardware.
+    mode: "enforce"
+    min_cpus_per_script: 2         # Used for the suggested number of parallel scripts in the control log.

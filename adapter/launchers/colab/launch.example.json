@@ -1,0 +1,16 @@
+{
+  "workdir": "/content",
+  "task_dir": "/content/task",
+  "output_dir": "/content/core_out",
+  "config": "/content/launch/config.yaml",
+  "env_dir": "/content/launch",
+  "pretrain_dir": "/content/pretrained_cache",
+  "core_options": {
+    "time_limit_secs": 28800,
+    "higher_is_better": false,
+    "num_gpus": 1,
+    "num_cpus": 12,
+    "parallel": 2,
+    "pretrained_mode": "catalog"
+  }
+}

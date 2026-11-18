@@ -1,0 +1,28 @@
+.env
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+cache/
+*.pt
+*.bin
+*.safetensors
+*.ckpt
+*.pth
+*.npy
+*.npz
+*.joblib
+*.pkl
+
+# Local development documents and credentials
+/docs/superagent_develop_docs/
+/1.group_HPC.txt
+/2.server_hpc.txt
+secrets.env
+.review-tmp*/
+
+# Local runtime outputs and optional model cache
+/outputs/
+/example_tasks/
+/pretrained_cache/

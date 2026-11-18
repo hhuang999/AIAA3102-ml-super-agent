@@ -1,0 +1,377 @@
+# Method catalog: general modelling methods and locally available pretrained models,
+# organised by data modality only. Entries never refer to particular tasks or datasets.
+#
+# Fields:
+#   id           entry identifier
+#   modality     image | text | tabular
+#   pretrained   whether the entry needs pretrained weights
+#   usage        frozen_features | finetune | in_context | from_scratch | classical
+#   title, when_to_use, input_notes   shown to the model (keep them in English)
+#   library      public library used to load / train it
+#   hub_id       model id on the public model hub (pretrained snapshot entries only)
+#   fetch        snapshot (download hub_id) | warmup (run `example` once to trigger the
+#                library's own download); empty for non-pretrained entries
+#   example      minimal loading / usage code
+#
+# To add or remove a method, edit this file only. Run `python -m superagent.fetch_models`
+# afterwards so pretrained entries are available offline.
+
+# ----------------------------------------------------------------------- tabular
+
+- id: tab_gbdt
+  modality: tabular
+  pretrained: false
+  usage: classical
+  title: "Gradient boosted trees (LightGBM, XGBoost, CatBoost)"
+  when_to_use: "First choice for tabular data. Handles missing values and categorical features directly, trains fast; use early stopping."
+  input_notes: "Use the library's native categorical support or label-free encodings for categorical features."
+  library: "lightgbm / xgboost / catboost"
+  hub_id: null
+  fetch: null
+  example: |
+    import lightgbm as lgb
+    model = lgb.LGBMClassifier(n_estimators=2000, learning_rate=0.03, num_leaves=63, n_jobs=N_CPUS)
+    model.fit(X_tr, y_tr, eval_set=[(X_va, y_va)],
+              callbacks=[lgb.early_stopping(100, verbose=False), lgb.log_evaluation(0)])
+    proba = model.predict_proba(X_te)
+
+- id: tab_linear
+  modality: tabular
+  pretrained: false
+  usage: classical
+  title: "Linear model (logistic regression) with scaling and one-hot encoding"
+  when_to_use: "Robust baseline when there are few samples or few features; also useful in combination with tree models."
+  input_notes: "Standardise numeric features; fit the scaler on the training part only."
+  library: "scikit-learn"
+  hub_id: null
+  fetch: null
+  example: |
+    from sklearn.compose import ColumnTransformer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import OneHotEncoder, StandardScaler
+    pre = ColumnTransformer([("num", StandardScaler(), num_cols),
+                             ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols)])
+    clf = make_pipeline(pre, LogisticRegression(max_iter=2000, C=1.0))
+    clf.fit(X_tr, y_tr)
+    proba = clf.predict_proba(X_te)
+
+- id: tab_forest
+  modality: tabular
+  pretrained: false
+  usage: classical
+  title: "Random forest / extremely randomised trees"
+  when_to_use: "Small or noisy data; needs almost no tuning."
+  input_notes: "Impute missing values and encode categorical features first."
+  library: "scikit-learn"
+  hub_id: null
+  fetch: null
+  example: |
+    from sklearn.ensemble import ExtraTreesClassifier
+    clf = ExtraTreesClassifier(n_estimators=500, n_jobs=N_CPUS, random_state=42)
+    clf.fit(X_tr, y_tr)
+    proba = clf.predict_proba(X_te)
+
+- id: tab_mlp
+  modality: tabular
+  pretrained: false
+  usage: from_scratch
+  title: "Tabular neural network (categorical embeddings + MLP)"
+  when_to_use: "Many rows (tens of thousands or more) with many categorical features; can be blended with tree models."
+  input_notes: "Standardise numeric features; map categorical values to integers and embed them."
+  library: "torch"
+  hub_id: null
+  fetch: null
+  example: |
+    import torch, torch.nn as nn
+    class TabMLP(nn.Module):
+        def __init__(self, n_num, cat_cards, n_classes, emb_dim=16, hidden=256):
+            super().__init__()
+            self.embs = nn.ModuleList([nn.Embedding(c + 1, emb_dim) for c in cat_cards])
+            d = n_num + emb_dim * len(cat_cards)
+            self.net = nn.Sequential(nn.Linear(d, hidden), nn.BatchNorm1d(hidden), nn.ReLU(), nn.Dropout(0.2),
+                                     nn.Linear(hidden, hidden), nn.BatchNorm1d(hidden), nn.ReLU(), nn.Dropout(0.2),
+                                     nn.Linear(hidden, n_classes))
+        def forward(self, x_num, x_cat):
+            parts = [x_num] + [e(x_cat[:, i]) for i, e in enumerate(self.embs)]
+            return self.net(torch.cat(parts, dim=1))
+
+- id: tab_tabicl_incontext
+  modality: tabular
+  pretrained: true
+  usage: in_context
+  title: "TabICL (tabular foundation model, no training needed)"
+  when_to_use: "Small to medium tabular data. No tuning: one forward pass gives predictions. A good candidate next to gradient boosted trees."
+  input_notes: "Works best with up to about 50,000 rows and about 100 features. Same interface as common classifiers: fit, then predict. The weights are fetched by the library on first use and are available offline here."
+  library: "tabicl"
+  hub_id: null
+  fetch: warmup
+  example: |
+    import numpy as np
+    from tabicl import TabICLClassifier
+    X_tr = np.random.rand(200, 5); y_tr = (X_tr[:, 0] > 0.5).astype(int); X_te = np.random.rand(20, 5)
+    clf = TabICLClassifier(n_estimators=4, device="cuda" if __import__("torch").cuda.is_available() else "cpu")
+    clf.fit(X_tr, y_tr)
+    proba = clf.predict_proba(X_te)
+    print(proba.shape)
+
+# ----------------------------------------------------------------------- text
+
+- id: text_tfidf_linear
+  modality: text
+  pretrained: false
+  usage: classical
+  title: "TF-IDF features (word and character n-grams) + linear model"
+  when_to_use: "Strong baseline for any text task. Runs in seconds to minutes."
+  input_notes: "Fit the vectorisers on the training part only. Logistic regression, linear SVM or naive Bayes all work."
+  library: "scikit-learn"
+  hub_id: null
+  fetch: null
+  example: |
+    from scipy.sparse import hstack
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
+    word = TfidfVectorizer(ngram_range=(1, 2), min_df=2, sublinear_tf=True)
+    char = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 5), min_df=2, sublinear_tf=True)
+    X_tr = hstack([word.fit_transform(texts_tr), char.fit_transform(texts_tr)]).tocsr()
+    X_te = hstack([word.transform(texts_te), char.transform(texts_te)]).tocsr()
+    clf = LogisticRegression(max_iter=3000, C=4.0).fit(X_tr, y_tr)
+    proba = clf.predict_proba(X_te)
+
+- id: text_scratch_nn
+  modality: text
+  pretrained: false
+  usage: from_scratch
+  title: "Small text network trained from scratch (word embeddings + CNN or BiGRU)"
+  when_to_use: "Plenty of data (tens of thousands of documents) and pretrained models are not allowed."
+  input_notes: "Build the vocabulary from the training part only."
+  library: "torch"
+  hub_id: null
+  fetch: null
+  example: |
+    import torch, torch.nn as nn
+    class TextCNN(nn.Module):
+        def __init__(self, vocab_size, n_classes, dim=128):
+            super().__init__()
+            self.emb = nn.Embedding(vocab_size, dim, padding_idx=0)
+            self.convs = nn.ModuleList([nn.Conv1d(dim, 128, k) for k in (3, 4, 5)])
+            self.drop = nn.Dropout(0.3)
+            self.fc = nn.Linear(128 * 3, n_classes)
+        def forward(self, ids):
+            x = self.emb(ids).transpose(1, 2)
+            x = torch.cat([torch.relu(c(x)).amax(dim=2) for c in self.convs], dim=1)
+            return self.fc(self.drop(x))
+
+- id: text_qwen3_embedding_features
+  modality: text
+  pretrained: true
+  usage: frozen_features
+  title: "Qwen3-Embedding-0.6B sentence embeddings + linear classifier"
+  when_to_use: "Fast, strong baseline for many languages (including Chinese and English). Encode once, cache the vectors in ./work, then train a linear model or gradient boosted trees on them."
+  input_notes: "Outputs 1024-dimensional vectors. The model accepts very long inputs, but truncate to a few hundred to two thousand tokens for speed (model.max_seq_length)."
+  library: "sentence-transformers"
+  hub_id: "Qwen/Qwen3-Embedding-0.6B"
+  fetch: snapshot
+  example: |
+    import torch
+    from sentence_transformers import SentenceTransformer
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = SentenceTransformer("Qwen/Qwen3-Embedding-0.6B", device=device)
+    model.max_seq_length = 512
+    emb = model.encode(["first document", "second document"], batch_size=32,
+                       normalize_embeddings=True, show_progress_bar=False)
+    print(emb.shape)  # (2, 1024)
+
+- id: text_deberta_v3_base_finetune
+  modality: text
+  pretrained: true
+  usage: finetune
+  title: "DeBERTa-v3-base fine-tuning"
+  when_to_use: "English text when accuracy matters most."
+  input_notes: "Maximum length 512 tokens. Use a small learning rate (1e-5 to 3e-5). If training is unstable, turn mixed precision off."
+  pitfalls: "fp16 autocast with a GradScaler often gives NaN losses or dtype errors with this model. Use bf16 autocast where torch.cuda.is_bf16_supported() is true, otherwise train in float32. Keep the weights in float32 and do not call .half() on the model."
+  library: "transformers"
+  hub_id: "microsoft/deberta-v3-base"
+  fetch: snapshot
+  example: |
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    name = "microsoft/deberta-v3-base"
+    tok = AutoTokenizer.from_pretrained(name)
+    model = AutoModelForSequenceClassification.from_pretrained(name, num_labels=2)
+    batch = tok(["an example sentence"], truncation=True, max_length=256, padding=True, return_tensors="pt")
+    with torch.no_grad():
+        print(model(**batch).logits.shape)  # (1, 2)
+
+- id: text_modernbert_base_finetune
+  modality: text
+  pretrained: true
+  usage: finetune
+  title: "ModernBERT-base fine-tuning"
+  when_to_use: "English text, especially long documents or when faster training and inference are needed."
+  input_notes: "Maximum length 8192 tokens; set the truncation length from the real text lengths to save time."
+  library: "transformers"
+  hub_id: "answerdotai/ModernBERT-base"
+  fetch: snapshot
+  example: |
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    name = "answerdotai/ModernBERT-base"
+    tok = AutoTokenizer.from_pretrained(name)
+    model = AutoModelForSequenceClassification.from_pretrained(name, num_labels=2)
+    batch = tok(["an example sentence"], truncation=True, max_length=512, padding=True, return_tensors="pt")
+    with torch.no_grad():
+        print(model(**batch).logits.shape)  # (1, 2)
+
+- id: text_xlm_roberta_base_finetune
+  modality: text
+  pretrained: true
+  usage: finetune
+  title: "XLM-RoBERTa-base fine-tuning"
+  when_to_use: "Chinese or multilingual text."
+  input_notes: "Maximum length 512 tokens."
+  library: "transformers"
+  hub_id: "FacebookAI/xlm-roberta-base"
+  fetch: snapshot
+  example: |
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    name = "FacebookAI/xlm-roberta-base"
+    tok = AutoTokenizer.from_pretrained(name)
+    model = AutoModelForSequenceClassification.from_pretrained(name, num_labels=2)
+    batch = tok(["一个例子", "an example"], truncation=True, max_length=256, padding=True, return_tensors="pt")
+    with torch.no_grad():
+        print(model(**batch).logits.shape)  # (2, 2)
+
+# ----------------------------------------------------------------------- image
+
+- id: img_scratch_cnn
+  modality: image
+  pretrained: false
+  usage: from_scratch
+  title: "Small residual CNN trained from scratch with data augmentation"
+  when_to_use: "Small images or many images; the main approach for images when pretrained models are not allowed."
+  input_notes: "Compute normalisation mean and std from the training part only."
+  library: "torch"
+  hub_id: null
+  fetch: null
+  example: |
+    import torch.nn as nn
+    def block(cin, cout):
+        return nn.Sequential(nn.Conv2d(cin, cout, 3, padding=1, bias=False), nn.BatchNorm2d(cout), nn.ReLU(inplace=True))
+    class SmallResNet(nn.Module):
+        def __init__(self, n_classes, in_ch=3):
+            super().__init__()
+            self.stem = block(in_ch, 64)
+            self.layer1 = nn.Sequential(block(64, 128), nn.MaxPool2d(2))
+            self.res1 = nn.Sequential(block(128, 128), block(128, 128))
+            self.layer2 = nn.Sequential(block(128, 256), nn.MaxPool2d(2))
+            self.head = nn.Sequential(nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Dropout(0.3), nn.Linear(256, n_classes))
+        def forward(self, x):
+            x = self.layer1(self.stem(x))
+            x = x + self.res1(x)
+            return self.head(self.layer2(x))
+
+- id: img_classic
+  modality: image
+  pretrained: false
+  usage: classical
+  title: "Simple image features + classical model"
+  when_to_use: "Very small images (for example 32 pixels per side or less): a fast baseline."
+  input_notes: "Flatten the pixels, or compute colour histograms / HOG features, then use gradient boosted trees or a linear model."
+  library: "scikit-learn / lightgbm"
+  hub_id: null
+  fetch: null
+  example: |
+    import numpy as np
+    from PIL import Image
+    from sklearn.linear_model import LogisticRegression
+    def load(paths, size=16):
+        return np.stack([np.asarray(Image.open(p).convert("L").resize((size, size)), dtype=np.float32).ravel() / 255.0
+                         for p in paths])
+    clf = LogisticRegression(max_iter=3000).fit(load(train_paths), y_tr)
+    proba = clf.predict_proba(load(test_paths))
+
+- id: img_dinov2_small_features
+  modality: image
+  pretrained: true
+  usage: frozen_features
+  title: "DINOv2 small vision transformer features + linear classifier"
+  when_to_use: "Few images (hundreds to a few thousand) or little time. Extract features once and cache them in ./work. Fastest option."
+  input_notes: "Input side length must be a multiple of 14. The default input is large; 224 is usually used for speed, which must be set with img_size when creating the model. Normalise with the usual ImageNet mean and std. Outputs 384-dimensional vectors."
+  library: "timm"
+  hub_id: "timm/vit_small_patch14_dinov2.lvd142m"
+  fetch: snapshot
+  example: |
+    import timm, torch
+    model = timm.create_model("vit_small_patch14_dinov2.lvd142m", pretrained=True, num_classes=0, img_size=224).eval()
+    cfg = timm.data.resolve_data_config({}, model=model)
+    transform = timm.data.create_transform(**cfg)  # apply to PIL images
+    with torch.no_grad():
+        feats = model(torch.randn(2, 3, 224, 224))
+    print(feats.shape)  # (2, 384)
+
+- id: img_dinov2_base_features
+  modality: image
+  pretrained: true
+  usage: frozen_features
+  title: "DINOv2 base vision transformer features + linear classifier"
+  when_to_use: "As above, when stronger features are needed and GPU memory allows."
+  input_notes: "Same input requirements as the small model. Outputs 768-dimensional vectors."
+  library: "timm"
+  hub_id: "timm/vit_base_patch14_dinov2.lvd142m"
+  fetch: snapshot
+  example: |
+    import timm, torch
+    model = timm.create_model("vit_base_patch14_dinov2.lvd142m", pretrained=True, num_classes=0, img_size=224).eval()
+    with torch.no_grad():
+        feats = model(torch.randn(2, 3, 224, 224))
+    print(feats.shape)  # (2, 768)
+
+- id: img_convnext_tiny_finetune
+  modality: image
+  pretrained: true
+  usage: finetune
+  title: "ConvNeXt-Tiny full fine-tuning"
+  when_to_use: "Many images (ten thousand or more) when accuracy matters."
+  input_notes: "Input 224x224. Use mixed precision and a small learning rate."
+  library: "timm"
+  hub_id: "timm/convnext_tiny.in12k_ft_in1k"
+  fetch: snapshot
+  example: |
+    import timm, torch
+    model = timm.create_model("convnext_tiny.in12k_ft_in1k", pretrained=True, num_classes=10)
+    with torch.no_grad():
+        print(model(torch.randn(2, 3, 224, 224)).shape)  # (2, 10)
+
+- id: img_efficientnetv2_s_finetune
+  modality: image
+  pretrained: true
+  usage: finetune
+  title: "EfficientNetV2-S full fine-tuning"
+  when_to_use: "As above, when GPU memory is tight."
+  input_notes: "Input side 300 to 384. Use mixed precision."
+  library: "timm"
+  hub_id: "timm/tf_efficientnetv2_s.in21k_ft_in1k"
+  fetch: snapshot
+  example: |
+    import timm, torch
+    model = timm.create_model("tf_efficientnetv2_s.in21k_ft_in1k", pretrained=True, num_classes=10)
+    with torch.no_grad():
+        print(model(torch.randn(2, 3, 300, 300)).shape)  # (2, 10)
+
+- id: img_resnet50_finetune
+  modality: image
+  pretrained: true
+  usage: finetune
+  title: "ResNet-50 full fine-tuning"
+  when_to_use: "A safe reference model."
+  input_notes: "Input 224x224."
+  library: "timm"
+  hub_id: "timm/resnet50.a1_in1k"
+  fetch: snapshot
+  example: |
+    import timm, torch
+    model = timm.create_model("resnet50.a1_in1k", pretrained=True, num_classes=10)
+    with torch.no_grad():
+        print(model(torch.randn(2, 3, 224, 224)).shape)  # (2, 10)
