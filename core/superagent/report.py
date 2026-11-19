@@ -20,7 +20,7 @@ TRIGGERED_OPERATORS = ("retrospect", "borrow", "synthesis")
 
 
 def _llm_usage(ctx: RunContext) -> dict[str, Any]:
-    formal = ctx.flags.get("formal")
+    formal = getattr(ctx, "flags", {}).get("formal")
     if formal:
         ledger = ctx.gateway.ledger
         with ledger.db() as db:
