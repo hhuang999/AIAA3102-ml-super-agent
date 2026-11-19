@@ -77,6 +77,7 @@ class Proposal:
     target: str | None = None
     expected_seconds: float = 0.0
     expected_sends: int = 0
+    method_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -121,7 +122,7 @@ def rank_proposals(snapshot, drafts, config, maximize):
         if not prop.local and not snapshot.api_available:
             rejected.append({**record, "reason": "api_route_unavailable"})
             return
-        samples = [r for r in facts if r["action"] == prop.action and r["method"] == prop.source
+        samples = [r for r in facts if r["action"] == prop.action and r["method"] == (prop.method_id or prop.source)
                    and r.get("status") != "cancelled"][-20:]
         complete = [r["seconds"] for r in samples if r.get("deliverable")]
         timeouts = [r["seconds"] for r in samples if (r.get("reason") or "").startswith("timeout")]

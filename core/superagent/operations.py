@@ -53,19 +53,22 @@ class Operations:
         sequence = snapshot.as_of_seq
         if (ctx.task_dir / "baseline.py").is_file():
             yield Proposal("supplied", parent, "draft", "Supplied baseline", "supplied", True, sequence)
-        kinds = {
-            "tabular": ("low-variance regularized baseline", "nonlinear tabular interactions"),
-            "text": ("sparse word or character representation", "complementary text representation"),
-            "image": ("lightweight spatial image features", "small classification backbone"),
-        }
-        primary = ctx.modalities[0] if ctx.modalities else None
-        hypotheses = kinds.get(primary, ("simple task-specific baseline", "alternative representation"))
         max_drafts = min(ctx.cfg["search"]["initial_drafts"], ctx.cfg["search"]["max_drafts"])
         position = 1 if (ctx.task_dir / "baseline.py").is_file() else 0
-        for hypothesis in hypotheses[:max(0, max_drafts - position)]:
-            yield Proposal(f"draft-{position}", parent, "draft", hypothesis, "generated", False, sequence,
-                           expected_sends=len(self._roles_draft()))
-            position += 1
+        methods = ctx.flags["draft_methods"]
+        if not methods:
+            if position < max_drafts:
+                yield Proposal("draft-discover", parent, "draft", "Use the declared reader with a feasible single model",
+                               "generated", False, sequence, expected_sends=len(self._roles_draft()))
+            return
+        explore = snapshot.dispatched > 0 and (snapshot.dispatched + 1) % ctx.cfg["control"]["adaptive"]["explore_every"] == 0
+        limit = ctx.cfg["search"]["max_drafts"] if explore else max_drafts
+        for method in methods[:max(0, limit - position)]:
+            recipe = ctx.cfg["search"]["local_recipes"] and method.recipe_id == "tab_linear@1"
+            hypothesis = f"{method.key} — {method.hypothesis}"
+            yield Proposal(f"draft-{method.key}", parent, "draft", hypothesis, "recipe" if recipe else "generated",
+                           recipe, sequence, expected_seconds=method.expected_seconds,
+                           expected_sends=0 if recipe else len(self._roles_draft()), method_id=method.key)
 
     def snapshot(self):
         from .training import progress_available
@@ -143,6 +146,15 @@ class Operations:
                 path = ctx.task_dir / "baseline.py"
                 return self.controller.ops._new_node(dispatch.id, "draft", parent, proposal.hypothesis,
                                                      path.read_text(encoding="utf8"))
+            if proposal.source == "recipe":
+                from pathlib import Path
+
+                facts = ctx.flags["task_facts"]
+                recipe = {key: facts[key] for key in ("input_manifest", "classes", "submission_columns", "probability")}
+                recipe["seed"] = ctx.cfg["run"]["seed"]
+                template = Path(__file__).with_name("tabular_recipe.py").read_text(encoding="utf8")
+                code = template.replace("\nTASK = None\n", f"\nTASK = {recipe!r}\n", 1)
+                return self.controller.ops._new_node(dispatch.id, "draft", parent, proposal.hypothesis, code)
             if proposal.action == "promote":
                 node = self.controller.ops._new_node(dispatch.id, "promote", parent, parent.plan, parent.code)
                 node.trial_id = parent.trial_id or parent.id
@@ -222,7 +234,9 @@ class Operations:
         data = {
             "schema_version": 1, "operation_id": dispatch.id, "proposal_id": dispatch.proposal.proposal_id,
             "node_id": node.id if node else None, "parent_id": parent.id, "action": dispatch.proposal.action,
-            "method": dispatch.proposal.source, "hypothesis": dispatch.proposal.hypothesis,
+            "method": dispatch.proposal.method_id or dispatch.proposal.source, "source": dispatch.proposal.source,
+            "hypothesis": dispatch.proposal.hypothesis,
+            "method_summary": node.method_summary if node else None,
             "source_sha256": source_hash, "target": dispatch.proposal.target, "branch_id": node.branch_id if node else parent.branch_id,
             "seed": ctx.cfg["run"]["seed"], "split_id": ctx.task_spec.signature, "metric": ctx.task_spec.metric,
             "status": terminal, "failed_stage": details.get("failure_stage"), "reason": details.get("reason"),

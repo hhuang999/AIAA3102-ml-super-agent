@@ -35,8 +35,9 @@ colab --auth oauth2 upload -s run1 upload/core.tar.gz upload/adapter.tar.gz uplo
 
 Upload `remote/*`, `launch.json` (copied from `launch.example.json`) and a `.env` file containing
 `DEEPSEEK_API_KEY` to `/content/launch/`. The default launch calls the official DeepSeek API.
-Setup prepares the Qwen encoder in `/content/pretrained_cache` for local inference. For custom
-Core settings, upload a YAML file and set `config` in `launch.json` to its path. Then start setup:
+Setup installs bubblewrap and prepares the Qwen encoder in `/content/pretrained_cache` for local inference.
+The example selects `/content/core/configs/single_model.yaml`. The session must permit Linux user namespaces
+for the isolated workflow. Set `config` to another uploaded YAML path to customize settings.
 
 ```bash
 colab --auth oauth2 exec -s run1 -f remote/start_setup.py
@@ -60,4 +61,5 @@ files if needed) and stop the session with `colab --auth oauth2 stop -s run1`.
 - A session without activity can be reclaimed. Contacting it every 180 seconds kept sessions alive
   through runs of eight hours; with intervals of 20 minutes a session was lost.
 - `run.py` appends `== run end <time> exit <code>` to the driver log when the Core finishes.
-- `snapshot.py` leaves out model weights, so snapshots stay small; the Core output keeps the weights.
+- `snapshot.py` exports status, logs and predictions. For model replay, download the complete resolved
+  `final/` version and `input_views/inference` after the run.

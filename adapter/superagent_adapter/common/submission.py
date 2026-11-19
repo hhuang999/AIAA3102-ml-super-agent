@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -28,15 +29,29 @@ def make_submission(pred_csv: Path, sample_csv: Path, out_csv: Path) -> Path:
 
 def primary_name(core_out: Path) -> str:
     """'final' when the Core wrote final/predictions.csv (interface 1.1), otherwise 'best'."""
-    return "final" if (Path(core_out) / "final" / "predictions.csv").exists() else "best"
+    root = Path(core_out)
+    return "final" if (root / "final/predictions.csv").exists() or (root / "logs/task_facts.json").is_file() else "best"
+
+
+def publication(core_out):
+    """Resolve the pointer once so the prediction and its provenance stay together."""
+    root = Path(core_out)
+    directory = (root / "final").resolve()
+    if not (directory / "predictions.csv").is_file():
+        return None
+    ref = directory / "source.json"
+    return directory, json.loads(ref.read_text(encoding="utf-8")) if ref.is_file() else {}
 
 
 def candidate_files(core_out: Path, include_top: bool = False) -> dict[str, Path]:
     """Prediction files to grade, the primary result first. The others are for comparison only."""
     core_out = Path(core_out)
     files: dict[str, Path] = {}
-    if (core_out / "final" / "predictions.csv").exists():
-        files["final"] = core_out / "final" / "predictions.csv"
+    published = publication(core_out)
+    if published:
+        files["final"] = published[0] / "predictions.csv"
+    elif primary_name(core_out) == "final":
+        return {}
     files["best"] = core_out / "best" / "predictions.csv"
     ens = core_out / "ensemble"
     if (ens / "predictions.csv").exists():

@@ -17,8 +17,12 @@ from .ledger import CancelledCall
 
 
 def _usage(raw, provider_id, model):
+    if not isinstance(raw, dict):
+        raise ValueError("usage must be an object")
     details = raw.get("prompt_tokens_details") or {}
     completion = raw.get("completion_tokens_details") or {}
+    if not isinstance(details, dict) or not isinstance(completion, dict):
+        raise ValueError("usage details must be objects")
     return {
         "provider_id": provider_id,
         "model": model,
@@ -105,7 +109,8 @@ class AsyncDeepSeekTransport:
                     timing["pool_seconds"] = time.monotonic() - start
                     reply = await self._chat(request, lambda usage: receive(attempt, usage), timing)
                     reason = reply.finish_reason
-                    status = "received" if reply.transport_complete else "no_transport_terminator"
+                    status = ("received" if reply.transport_complete else
+                              "model_idle_timeout" if reason == "model_idle_timeout" else "no_transport_terminator")
                     return reply
                 finally:
                     self.slots.release()
@@ -124,11 +129,12 @@ class AsyncDeepSeekTransport:
             raise failure from exc
         except (openai.APITimeoutError, openai.APIConnectionError, httpx.TransportError) as exc:
             category = exc.__cause__ if isinstance(exc, openai.APIConnectionError) else exc
-            status = {
+            reason = {
                 httpx.ReadTimeout: "read_idle_timeout", httpx.ConnectTimeout: "connect_timeout",
                 httpx.PoolTimeout: "pool_timeout",
             }.get(type(category), "network_error")
-            raise TransientAPIError(status) from exc
+            status = "not_sent" if isinstance(category, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)) else reason
+            raise TransientAPIError(reason) from exc
         except (ValueError, TypeError, KeyError) as exc:
             status = "invalid_transport_frame"
             raise TransientAPIError(status) from exc
@@ -188,10 +194,17 @@ class AsyncDeepSeekTransport:
                             if chunk.get("usage") is not None:
                                 usage = _usage(chunk["usage"], provider_id, model)
                                 receive(usage)
-                            for choice in chunk.get("choices", []):
+                            choices = chunk.get("choices", [])
+                            if not isinstance(choices, list):
+                                raise ValueError("choices must be an array")
+                            for choice in choices:
+                                if not isinstance(choice, dict) or not isinstance(choice.get("delta", {}), dict):
+                                    raise ValueError("invalid choice delta")
                                 delta = choice.get("delta", {})
                                 reasoning = delta.get("reasoning_content")
                                 content = delta.get("content")
+                                if content is not None and not isinstance(content, str):
+                                    raise ValueError("invalid content delta")
                                 if reasoning:
                                     timing.setdefault("first_reasoning_seconds", now)
                                 if content:

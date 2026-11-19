@@ -7,10 +7,10 @@ import yaml
 from .errors import InvalidInputError
 
 
-def read_cards(task: Path, modalities):
+def load_cards(task: Path, modalities):
     path = task / "knowledge.yaml"
     if not path.exists():
-        return ""
+        return []
     try:
         cards = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(cards, list):
@@ -25,11 +25,17 @@ def read_cards(task: Path, modalities):
                     f"each card needs nonempty strings: {', '.join(fields)}"
                 )
             if card["modality"] in (*modalities, "classification"):
-                selected.append(
-                    "{id}@{version}: {method}\nAvoid when: {counterexample}\nSource: {source}".format(
-                        **card
-                    )
-                )
-        return "\n\n".join(selected[:6])
+                selected.append(card)
+        ids = [(card["id"], card["version"]) for card in selected]
+        if len(ids) != len(set(ids)):
+            raise ValueError("duplicate method card ID and version")
+        return selected
     except (ValueError, yaml.YAMLError) as exc:
         raise InvalidInputError(f"{path}: {exc}") from exc
+
+
+def read_cards(task: Path, modalities):
+    return "\n\n".join(
+        "{id}@{version}: {method}\nAvoid when: {counterexample}\nSource: {source}".format(**card)
+        for card in load_cards(task, modalities)[:6]
+    )

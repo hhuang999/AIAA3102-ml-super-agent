@@ -1,67 +1,58 @@
 # SuperAgent
 
-SuperAgent generates, trains and improves Python models for classification tasks. It scores declared tasks against fixed validation labels and publishes a submission as soon as it has a verified candidate. The default controller can compare a new draft, a code modification and continuation from an eligible checkpoint.
+SuperAgent develops single-model classifiers from a task directory. The isolated workflow independently scores each candidate, tests model reload and updates the published submission whenever a strictly better verified model is ready.
 
-| Directory | Start here |
-|---|---|
-| [Core](core/) | Task contract, generation, runner, scoring and search |
-| [Adapter](adapter/) | Task preparation, Core launch, submission checks, grading and cost reports |
-| [Colab launchers](adapter/launchers/colab/) | Optional upload, entry point and snapshots |
+- [Core](core/) specifies task inputs, candidate behavior and model packages.
+- [Adapter](adapter/) launches Core, exports submissions and prices API receipts.
+- [Colab launchers](adapter/launchers/colab/) package a task and run it through Adapter.
 
-## Install on Linux or WSL
+## Install
 
-Use Python 3.11 or newer. The CPU example installs without a GPU framework.
+Use Linux or WSL, Python 3.11 or newer and bubblewrap with user namespaces enabled. On Ubuntu or Debian, install the OS package with `sudo apt-get install bubblewrap`. Core checks the isolation boundary before running a task.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e './core[demo]' -e ./adapter
-```
-
-For generated scripts that need additional model libraries, install the relevant dependencies from [core/requirements.txt](core/requirements.txt) in the same runner environment. Supply the appropriate PyTorch build for a CUDA task. Generated scripts run under the account launching the agent. Use an isolated account or container for untrusted jobs.
-
-## Check the installation
-
-Check both command-line entry points before configuring credentials.
-
-```bash
+python -m pip install './core[demo]' ./adapter
 python -m superagent.run --help
 python -m superagent_adapter.cli --help
 ```
 
-## Configure DeepSeek chat and local Qwen embeddings
+Install any extra model libraries required by your chosen methods in the same environment. The [full runner requirements](core/requirements.txt) list optional model and local embedding libraries.
 
-Copy [core/.env.example](core/.env.example) to `.env` at the repository root and set `DEEPSEEK_API_KEY` to a key from DeepSeek. Generation and judgement use `deepseek-flash` at `https://api.deepseek.com/chat/completions`. Leave `SUPERAGENT_LLM_BASE_URL` unset for the official route. [DeepSeek API documentation](https://api-docs.deepseek.com/)
+## Run, export and reload the Iris example
 
-From the repository root, install the local encoder and prepare its weights once in the runner environment:
-
-```bash
-python -m pip install -e './core[embedding]'
-python -m superagent.fetch_models --only experience_embedding
-```
-
-The setup command downloads `Qwen/Qwen3-Embedding-0.6B` and checks a local forward pass. During a run, experience retrieval encodes text on the CPU using the cached weights. Set `SUPERAGENT_PRETRAIN_DIR` to share a cache between runs. If the weights or encoder are unavailable, Core logs a warning and uses keyword retrieval. [Qwen model card](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B)
-
-## Run the Iris classification example
-
-Run from the same directory and keep task test labels outside the task directory.
+The packaged `tab_linear@1` recipe trains a scikit-learn pipeline on Iris. These commands use one candidate slot and zero API requests. Use a new output directory on each run.
 
 ```bash
 python core/examples/make_example_tasks.py --out example_tasks --tasks tabular_small --contract
 python -m superagent.run --task-dir example_tasks/tabular_small/task \
-  --output-dir outputs/iris --config core/configs/quickstart.yaml \
-  --time-limit-secs 600 --max-steps 2
-python core/examples/score_predictions.py outputs/iris/final/predictions.csv \
+  --output-dir outputs/iris --config core/configs/single_model.yaml --max-steps 1
+python -m superagent_adapter.cli submit --core-output outputs/iris \
+  --sample example_tasks/tabular_small/task/data/sample_predictions.csv --output outputs/iris-submission.csv
+python -m superagent_adapter.cli cost --core-output outputs/iris \
+  --prices adapter/examples/prices.example.yaml
+python core/examples/score_predictions.py outputs/iris-submission.csv \
   example_tasks/tabular_small/test_labels.csv --metric accuracy
+python outputs/iris/final/solution.py --predict-only --model-dir outputs/iris/final/model \
+  --data-dir outputs/iris/input_views/inference --output-dir outputs/iris-reloaded
 ```
 
-To launch through Adapter, replace the Core command with `python -m superagent_adapter.cli run` and use the same arguments with a fresh output directory. The quickstart config uses one CPU worker, a single initial script, and single-model delivery. A live run's first valid result depends on the provider, environment and the code generated.
+The reload command for this bundled recipe uses only the released model package and the projected inference inputs. `final/` points to one complete version under `submissions/`. Preserve symlinks when moving the run, or copy the resolved version together with its inference inputs. The source, manifest and verification receipt are included in that version.
 
-## Read a completed run
+To launch through Adapter, use `python -m superagent_adapter.cli run` with the same Core arguments and a fresh output directory. `status.json` reports the latest published version and the run stop reason. Exit code `2` means no valid submission was published.
 
-- `final/predictions.csv` is the submission and `final/source.json` identifies its source. The pointer updates when a verified candidate is published. On Linux preserve symlinks when copying the complete run directory, or export the CSV via Adapter.
-- `best/` identifies the best single model. `status.json` reports the outcome and whether a final file exists. Exit `2` means the run has no valid submission.
-- `logs/decisions.jsonl`, `logs/llm_calls.jsonl` and `logs/accounting.json` record decisions, HTTP attempts and known cost with unknown exposure. `report/run_summary.json` summarizes the run. A late receipt in `logs/late_usage.jsonl` can arrive after a report was written.
-- Use the [Core reference](core/README.md) for task and model artifact formats, and the [Adapter guide](adapter/README.md) for prepared datasets, submission and grading.
+## Enable DeepSeek and local retrieval
+
+Copy [the env example](core/.env.example) to `.env` in the launch directory and set `DEEPSEEK_API_KEY`. The official route is `deepseek-flash` at `https://api.deepseek.com/chat/completions`. To check the generated-script path on Iris, copy `single_model.yaml`, set `search.local_recipes: false` and `codegen.staged_drafting: false`, and pass the new configuration with `--max-steps 1`. [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)
+
+Optional local semantic retrieval uses Qwen3 embeddings. Install the encoder and prepare its weights in the runner environment. Keyword retrieval remains available when the encoder is absent. [Qwen3 embedding model](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B)
+
+```bash
+python -m pip install './core[embedding]'
+python -m superagent.fetch_models --only experience_embedding
+```
+
+Use `logs/decisions.jsonl` to inspect candidate choices, `report/run_summary.json` for outcomes, and Adapter `cost` for prices and unknown usage. A caller can stop a job with SIGINT or SIGTERM. Core completes or preserves the last atomic publication and applies limits to individual scripts and API requests.
 
 [MIT license](LICENSE)

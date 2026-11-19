@@ -228,9 +228,20 @@ def run_task(
 
             manifest = prepare_inputs(task, paths.prepared, spec, out / "input_views")
             visible = out / "input_views/training"
-        task_desc = raw_desc + "\n" + spec.prompt if spec else _clean_description(gateway, raw_desc)
         if manifest:
-            task_desc += "\nThe sandbox supplies this input manifest in data/input_manifest.json:\n" + str(manifest.payload())
+            import json
+
+            task_desc = (
+                raw_desc + "\nUse data/input_manifest.json and this task-owned contract:\n"
+                + json.dumps({"metric": spec.metric, "classes": spec.classes, "columns": spec.columns,
+                              "probability": spec.probability, "input_manifest": manifest.payload()}, ensure_ascii=False)
+                + "\nEmit out/val_predictions.csv and out/predictions.csv. "
+                "Validation IDs must cover the fixed split and test rows must follow the sample order. "
+                "The independent scorer owns the validation truth. "
+                "Your --predict-only path receives only bound val/test inputs and the fitted model package."
+            )
+        else:
+            task_desc = raw_desc + "\n" + spec.prompt if spec else _clean_description(gateway, raw_desc)
         if spec is not None:
             if not spec.inference_inputs and not formal:
                 raise InvalidInputError("task.yaml must declare inference_inputs for independent artifact verification")
@@ -252,11 +263,12 @@ def run_task(
             log.warning("data/%s not found: prediction file format checks are skipped", SAMPLE_NAME)
         mode = str(cfg["pretrained"]["mode"])
         local_dir = str(cfg["pretrained"]["local_dir"])
-        cat = build_catalog(mode, local_dir, prof.modalities)
+        cat = build_catalog("catalog" if formal and mode != "off" else mode, local_dir, prof.modalities)
         from .knowledge import read_cards
-        cards = read_cards(task, prof.modalities)
-        if cards:
-            cat.text += "\n\nTask method cards:\n" + cards
+        if not formal:
+            cards = read_cards(task, prof.modalities)
+            if cards:
+                cat.text += "\n\nTask method cards:\n" + cards
         log.info("detected modalities: %s; catalog entries shown: %d", prof.modalities or "none", len(cat.entries))
 
         experience = None
@@ -278,22 +290,51 @@ def run_task(
         from .llm.ledger import fingerprint
         if formal:
             from importlib.metadata import PackageNotFoundError, version
+            from dataclasses import asdict
 
+            from .catalog import match_methods, render, stage_method_assets
             from .inputs import build_task_facts
             from .isolation import Bubblewrap
+            from .knowledge import load_cards
+            from .training import digest
 
             versions = {}
-            for package in ("superagent", "numpy", "pandas", "scikit-learn", "Pillow", "tfrecord", "torch", "transformers"):
+            for package in ("superagent", "numpy", "pandas", "scikit-learn", "Pillow", "tfrecord", "joblib",
+                            "torch", "torchvision", "timm", "transformers", "sentence-transformers",
+                            "lightgbm", "xgboost", "catboost", "tabicl"):
                 try:
                     versions[package] = version(package)
                 except PackageNotFoundError:
                     continue
             facts = build_task_facts(spec, manifest, {"modalities": prof.modalities, "dependencies": versions}, run_id)
+            worktree = Path(__file__).parent
+            runtime_sha = fingerprint([(file.relative_to(worktree).as_posix(), digest(file))
+                for file in sorted(worktree.rglob("*")) if file.is_file() and file.suffix in (".py", ".yaml")])
+            facts["runtime_sha256"] = runtime_sha
+            facts["catalog_sha256"] = digest(worktree / "resources/method_catalog.yaml")
+            matches = match_methods(facts, cat, load_cards(task, prof.modalities), local_dir=local_dir)
+            eligible = [match for match in matches if match.eligible]
+            drafts = eligible[:3]
+            assets = stage_method_assets(drafts, out / "method_assets", local_dir)
+            methods = [
+                {**{key: value for key, value in asdict(m).items() if key != "entry"},
+                 "weights_sha256": m.entry.get("weight_hashes") if m.eligible else None}
+                for m in matches
+            ]
+            facts["methods"] = methods
+            atomic_write_json(paths.logs / "method_matches.json", methods)
+            ctx.catalog_text = render([m.entry for m in drafts], "catalog" if mode != "off" else mode)
+            task_notes = [m for m in eligible if m.entry.get("method")]
+            if task_notes:
+                ctx.catalog_text += "\nTask methods:\n" + "\n".join(
+                    f"{m.key}: {m.hypothesis}. Avoid: {m.entry['counterexample']}. Source: {m.source}" for m in task_notes[:3]
+                )
             ctx.flags.update(formal=True, input_manifest=manifest, task_facts=facts,
-                runtime_environment={"schema_version": 1, "python": platform.python_version(), "packages": versions},
-                publish_lock=threading.Lock(), artifact_leases=set())
+                runtime_environment={"schema_version": 1, "python": platform.python_version(), "packages": versions,
+                                     "runtime_sha256": runtime_sha, "catalog_sha256": facts["catalog_sha256"]},
+                publish_lock=threading.Lock(), artifact_leases=set(), draft_methods=drafts)
             atomic_write_json(paths.logs / "task_facts.json", facts)
-            executor.isolation = Bubblewrap(visible, out / "input_views/inference", task / "data")
+            executor.isolation = Bubblewrap(visible, out / "input_views/inference", task / "data", assets=assets)
         # The prepared dataset is stable for the lifetime of this run; promotions never cross runs.
         ctx.flags["trial_environment"]=fingerprint([str(out),spec.signature if spec else raw_desc,
             mode,[(e["id"],e.get("example"),e.get("weight_hashes")) for e in cat.entries],cfg["run"]["seed"]])

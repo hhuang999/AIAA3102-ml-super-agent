@@ -23,7 +23,7 @@
   pretrained: false
   usage: classical
   title: "Gradient boosted trees (LightGBM, XGBoost, CatBoost)"
-  when_to_use: "First choice for tabular data. Handles missing values and categorical features directly, trains fast; use early stopping."
+  when_to_use: "Compare with a verified linear baseline when available features suggest nonlinear interactions. If using early stopping, split training data internally."
   input_notes: "Use the library's native categorical support or label-free encodings for categorical features."
   library: "lightgbm / xgboost / catboost"
   hub_id: null
@@ -31,17 +31,21 @@
   example: |
     import lightgbm as lgb
     model = lgb.LGBMClassifier(n_estimators=2000, learning_rate=0.03, num_leaves=63, n_jobs=N_CPUS)
-    model.fit(X_tr, y_tr, eval_set=[(X_va, y_va)],
-              callbacks=[lgb.early_stopping(100, verbose=False), lgb.log_evaluation(0)])
+    model.fit(X_tr, y_tr)
     proba = model.predict_proba(X_te)
 
 - id: tab_linear
+  version: 1
+  source: "https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.LogisticRegression.html"
+  recipe_id: tab_linear@1
+  estimated_seconds: 90
+  alternative: tab_forest
   modality: tabular
   pretrained: false
   usage: classical
   title: "Linear model (logistic regression) with scaling and one-hot encoding"
-  when_to_use: "Robust baseline when there are few samples or few features; also useful in combination with tree models."
-  input_notes: "Standardise numeric features; fit the scaler on the training part only."
+  when_to_use: "A low-variance baseline for small or sparse, high-cardinality data. Compare a tree model if comparable evidence suggests strong nonlinear interactions."
+  input_notes: "Fit missing-value handling, numeric scaling and categorical encoding inside the training split."
   library: "scikit-learn"
   hub_id: null
   fetch: null
@@ -118,6 +122,9 @@
 # ----------------------------------------------------------------------- text
 
 - id: text_tfidf_linear
+  version: 1
+  estimated_seconds: 240
+  source: "https://scikit-learn.org/stable/modules/feature_extraction.html#text-feature-extraction"
   modality: text
   pretrained: false
   usage: classical
@@ -273,6 +280,10 @@
             return self.head(self.layer2(x))
 
 - id: img_classic
+  version: 1
+  estimated_seconds: 300
+  requires: ["Pillow", "scikit-learn"]
+  source: "https://scikit-learn.org/stable/modules/svm.html"
   modality: image
   pretrained: false
   usage: classical

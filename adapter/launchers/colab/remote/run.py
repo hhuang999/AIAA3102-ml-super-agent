@@ -5,6 +5,7 @@ the last line is '== run end <time> exit <code>'."""
 import datetime
 import json
 import os
+import signal
 import subprocess
 
 
@@ -44,6 +45,14 @@ env = dict(os.environ, SUPERAGENT_PRETRAIN_DIR=cfg["pretrain_dir"])
 with open(cfg["driver_log"], "a") as fh:
     fh.write(f"== run start {now()}\n")
     fh.flush()
-    code = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, env=env).returncode
+    process = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, env=env)
+
+    def forward(signum, _frame):
+        if process.poll() is None:
+            process.send_signal(signum)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, forward)
+    code = process.wait()
     fh.write(f"== run end {now()} exit {code}\n")
 raise SystemExit(code)

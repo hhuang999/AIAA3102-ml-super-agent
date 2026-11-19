@@ -4,12 +4,9 @@
   "output_dir": "/content/core_out",
   "env_dir": "/content/launch",
   "pretrain_dir": "/content/pretrained_cache",
+  "config": "/content/core/configs/single_model.yaml",
   "core_options": {
-    "time_limit_secs": 28800,
-    "higher_is_better": false,
-    "num_gpus": 1,
-    "num_cpus": 12,
-    "parallel": 2,
-    "pretrained_mode": "catalog"
+    "max_steps": 5,
+    "parallel": 2
   }
 }

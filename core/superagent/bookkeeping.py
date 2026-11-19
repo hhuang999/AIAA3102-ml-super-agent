@@ -118,12 +118,19 @@ def status_payload(ctx: RunContext, status: str, error: str | None = None, ensem
     if final is None:
         final = latest(ctx.paths.root)
     tree = ctx.tree
+    formal = ctx.flags.get("formal")
+    identity = {
+        "run_id": ctx.flags["task_facts"]["run_id"],
+        "claimed_operations": ctx.flags.get("claimed_steps", 0),
+        "final_version_id": final.get("version_id") if final else None,
+    } if formal else {}
     with tree.lock:
         sol = [n for n in tree.nodes if not n.is_root]
         best = tree.best
         branches = {n.branch_id for n in sol if n.branch_id is not None}
         return {
             "interface_version": INTERFACE_VERSION,
+            **identity,
             "status": status,
             "stop_reason": ctx.stop_reason if status != "running" else None,
             "started_at": ctx.started_at,

@@ -26,8 +26,9 @@ work = cfg.get("workdir", "/content")
 out = cfg["output_dir"].rstrip("/")
 name, parent = os.path.basename(out), os.path.dirname(out)
 excludes = [f"{name}/{path}" for path in (
-    "prepared_data", "feature_cache", "runs/*/out/model", "runs/*/work",
-    "runs/*/checkpoints", "best/artifacts",
+    "prepared_data", "input_views", "method_assets", "feature_cache",
+    "runs/*/out/model", "runs/*/work", "runs/*/checkpoints", "best/artifacts",
+    "submissions/*/model",
 )]
 logs = [p for p in (cfg["driver_log"], os.path.join(parent, f"{name}_core_stdout.log")) if os.path.exists(p)]
 with tempfile.NamedTemporaryFile(dir=work, prefix=".snapshot-", delete=False) as temporary:

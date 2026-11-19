@@ -5,7 +5,7 @@ Plan file (YAML):
     core_python: /path/to/python          # interpreter with superagent installed
     cwd: /path/to/dir/with/.env           # where the Core reads its .env file
     config: /path/to/config.yaml          # optional, used by every run
-    options: {time_limit_secs: 28800, parallel: 2, num_gpus: 1, num_cpus: 8}
+    options: {max_steps: 5, parallel: 2, num_gpus: 0, num_cpus: 2}
     grader:                                # optional: MLE-bench grading
       mlebench_bin: mlebench
       data_dir: /path/to/mlebench/data

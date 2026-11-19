@@ -86,6 +86,7 @@ llm:
   lower_effort_on_truncation: true # Retry with a lower reasoning effort when thinking used up the output limit.
 
 search:
+  local_recipes: true              # Eligible packaged baseline recipes for the isolated workflow.
   initial_drafts: 3                # Drafts written at the start.
   concurrent_initial_drafts: true  # Write the initial drafts at the same time instead of one after another.
   max_drafts: 5                    # Maximum number of drafts under the root.

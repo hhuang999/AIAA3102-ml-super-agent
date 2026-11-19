@@ -26,6 +26,7 @@ class FullScriptResult:
     extracted: Extracted | None
     last_reply: str
     attempts: int
+    failure_reason: str | None = None
 
 
 @dataclass
@@ -66,11 +67,10 @@ def solution_error(code):
         return error
     tree = ast.parse(code)
     strings = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
-    required = {
-        "__main__", "--predict-only", "--model-dir", "--data-dir", "--output-dir",
-        "val_predictions.csv", "predictions.csv", "inference.json",
-    }
-    missing = required - strings
+    entry = {"__main__", "--predict-only", "--model-dir", "--data-dir", "--output-dir"}
+    filenames = {"val_predictions.csv", "predictions.csv", "inference.json"}
+    basenames = {value.replace("\\", "/").rsplit("/", 1)[-1] for value in strings}
+    missing = (entry - strings) | (filenames - basenames)
     if missing:
         return "code_incomplete: missing " + ", ".join(sorted(missing))
     return None
@@ -186,6 +186,7 @@ class CodeGenerator:
         stage = f"{role}.code_retry"
         saved = ledger.get(node_id, stage, signature) if ledger else None
         last = ""
+        reason = "code_incomplete"
         note = saved["note"] if saved else ""
         seen = {tuple(item) for item in saved["seen"]} if saved else set()
         expanded = saved["expanded"] if saved else False
@@ -204,6 +205,12 @@ class CodeGenerator:
                 error = solution_error(ex.code)
             if ex is not None and not error and not malformed_fence:
                 return FullScriptResult(ex, last, i + 1)
+            reason = error or (
+                "no_transport_terminator" if res.finish_reason == "no_transport_terminator" else
+                "model_idle_timeout" if res.finish_reason == "model_idle_timeout" else
+                "output_truncated" if res.finish_reason == "length" else
+                "empty_response" if not res.content.strip() else "code_incomplete"
+            )
             if res.finish_reason == "length" and not res.content.strip():
                 break
             expanded = expanded or res.body_limited
@@ -214,7 +221,7 @@ class CodeGenerator:
                 note += "\n" + error
             if ledger:
                 ledger.put(node_id, stage, signature, {"note": note, "seen": sorted(seen), "expanded": expanded})
-        return FullScriptResult(None, last, len(seen))
+        return FullScriptResult(None, last, len(seen), reason)
 
     def staged(
         self,

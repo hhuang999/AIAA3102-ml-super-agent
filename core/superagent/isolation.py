@@ -12,9 +12,10 @@ from .errors import InvalidInputError
 
 
 class Bubblewrap:
-    def __init__(self, training: Path, inference: Path, forbidden: Path):
+    def __init__(self, training: Path, inference: Path, forbidden: Path, *, assets=None):
         self.training = training
         self.inference = inference
+        self.assets = assets or {}
         self.binary = shutil.which("bwrap")
         if sys.platform != "linux" or not self.binary:
             raise InvalidInputError("verification_environment_unavailable: install Linux bubblewrap")
@@ -67,6 +68,9 @@ class Bubblewrap:
     def command(self, job, argv, source_env, *, inference):
         command = self.runtime.copy()
         command.extend(("--ro-bind", str(self.inference if inference else self.training), "/job/data"))
+        if not inference:
+            for target, source in self.assets.items():
+                command.extend(("--ro-bind", str(source), target))
         for name in ("solution.py", "verify_inference.py", "check.py", "model"):
             source = job / name
             if source.exists():

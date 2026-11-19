@@ -44,6 +44,13 @@ class Operators:
         return blocks.implementation_rules(self.ctx.resources(), int(v["split_seed"]), float(v["validation_fraction"]), declared_split=self.ctx.task_spec is not None)
 
     def _env(self) -> str:
+        if self.ctx.flags.get("formal"):
+            caps = self.ctx.flags["task_facts"]["capabilities"]
+            packages = ", ".join(sorted(caps["dependencies"]))
+            return (
+                f"Available packages: {packages}. Training and inference run offline. "
+                "Use only the declared paths. Embed everything needed for standalone inference in out/model."
+            )
         return blocks.environment_block(self.ctx.mode, self.ctx.rng)  # type: ignore[arg-type]
 
     def _new_node(self, node_id: str, kind: str, parent: Node, plan: str, code: str) -> Node:
@@ -186,6 +193,7 @@ class Operators:
         node.structured_plan = plan
         if extract is None:
             self._codegen_failure(node, "plan_incomplete: not every approved change is present in the candidate")
+            node.summary = "plan_incomplete: not every approved change is present in the candidate"
         return node
 
     # ------------------------------------------------------------------ draft
@@ -235,6 +243,8 @@ class Operators:
         node = self._new_node(node_id, "draft", root, result.plan if result else "", result.code if result else "")
         if result is None:
             self._codegen_failure(node, last)
+            if ledger:
+                node.summary = r.failure_reason or node.summary
         return GenOutcome(node, "draft", details)
 
     # ------------------------------------------------------------------ planning + patching shared by refine-like ops

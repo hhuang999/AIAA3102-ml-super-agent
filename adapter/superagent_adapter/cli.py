@@ -19,6 +19,7 @@ from .analysis import analyze, plot_timeline
 from .batch import run_plan
 from .common.core_runner import core_command, run_core
 from .common.costs import load_prices, read_usage
+from .common.submission import make_submission, publication
 from .common.task_dir import build_task_dir, check_isolation
 from .mlebench.grader import grade_all
 
@@ -54,6 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--keep-artifacts-top-k", type=int)
     r.add_argument("--pretrained-mode", choices=["catalog", "open", "off"])
     r.add_argument("--seed", type=int)
+    s = sub.add_parser("submit", help="export the published predictions in sample order")
+    s.add_argument("--core-output", required=True, type=Path)
+    s.add_argument("--sample", required=True, type=Path)
+    s.add_argument("--output", required=True, type=Path)
     g = sub.add_parser("grade", help="grade the Core's predictions with the official MLE-bench grader")
     g.add_argument("--core-output", required=True, type=Path)
     g.add_argument("--sample", required=True, type=Path)
@@ -99,6 +104,19 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"primary": res["primary"],
                           "grades": {k: {"score": v["score"], "any_medal": v["any_medal"]} for k, v in res["grades"].items()}},
                          indent=2))
+        return 0
+    if a.cmd == "submit":
+        published = publication(a.core_output)
+        if published is None:
+            print("superagent_adapter: no published predictions", file=sys.stderr)
+            return 2
+        path, metadata = published
+        try:
+            dest = make_submission(path / "predictions.csv", a.sample, a.output)
+        except (ValueError, OSError) as exc:
+            print(f"superagent_adapter: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps({"submission": str(dest), "version_id": metadata.get("version_id"), "node_id": metadata.get("node_id")}))
         return 0
     if a.cmd == "batch":
         res = run_plan(a.plan, a.results)
