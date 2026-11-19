@@ -1,8 +1,0 @@
-# Enforces the model cost cap: the search finishes before the recorded cost would pass the limit.
-# rate_to_cap_currency converts llm.currency into the cap currency (1.0 when both are the same).
-control:
-  cost_cap:
-    mode: "enforce"
-    limit: 20.0
-    currency: "CNY"
-    rate_to_cap_currency: 1.0

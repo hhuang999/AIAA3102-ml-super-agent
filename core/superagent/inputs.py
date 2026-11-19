@@ -179,8 +179,15 @@ def prepare_inputs(task, prepared, spec, root):
         test_ids, test_types = _project(prepared, inference, splits["test"], spec.classes, blocked)
         if set(val_ids) != set(spec.truth.index) or set(test_ids) != set(spec.test_ids):
             raise ValueError("validation or test input IDs differ from the truth or submission IDs")
-        if raw.get("shared_id_domain") and set(train_ids).intersection(val_ids):
-            raise ValueError("training and validation IDs overlap in the declared shared ID domain")
+        if raw.get("shared_id_domain"):
+            train_set, val_set, test_set = map(set, (train_ids, val_ids, test_ids))
+            for first, second, left, right in (
+                ("training", "validation", train_set, val_set),
+                ("training", "test", train_set, test_set),
+                ("validation", "test", val_set, test_set),
+            ):
+                if not left.isdisjoint(right):
+                    raise ValueError(f"{first} and {second} IDs overlap in the declared shared ID domain")
         for types in (val_types, test_types):
             if any(train_types.get(k, v) != v for k, v in types.items()):
                 raise ValueError("TFRecord feature types differ between splits")

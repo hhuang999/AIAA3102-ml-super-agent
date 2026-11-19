@@ -19,10 +19,11 @@ session alive during long runs. `remote/` runs on the Colab machine, `local/` on
 
 ## Steps
 
-The Colab working directory is `/content`; the helper files and the run settings go to `/content/launch`.
+The Colab working directory is `/content`. Put the helper files and run settings in `/content/launch`.
+From this launcher directory, set `REPO` to the SuperAgent checkout and `TASK` to your prepared task directory.
 
 ```bash
-local/pack.sh <core dir> <adapter dir> <task dir> upload/
+bash local/pack.sh "$REPO/core" "$REPO/adapter" "$TASK" upload/
 ```
 
 ```bash
@@ -50,7 +51,7 @@ colab --auth oauth2 exec -s run1 -f remote/start_run.py
 ```
 
 ```bash
-SESSION=run1 LOCAL_DIR=snapshots local/keepalive.sh
+SESSION=run1 LOCAL_DIR=snapshots bash local/keepalive.sh
 ```
 
 When `snapshots/keepalive.log` shows `RUN FINISHED`, pack and download the full output (including the model

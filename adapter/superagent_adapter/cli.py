@@ -19,7 +19,7 @@ from .analysis import analyze, plot_timeline
 from .batch import run_plan
 from .common.core_runner import core_command, run_core
 from .common.costs import load_prices, read_usage
-from .common.submission import make_submission, publication
+from .common.submission import make_submission, primary_name, publication
 from .common.task_dir import build_task_dir, check_isolation
 from .mlebench.grader import grade_all
 
@@ -107,6 +107,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.cmd == "submit":
         published = publication(a.core_output)
+        if published is None and primary_name(a.core_output) == "best":
+            legacy = a.core_output / "best"
+            if (legacy / "predictions.csv").is_file():
+                published = legacy, {}
         if published is None:
             print("superagent_adapter: no published predictions", file=sys.stderr)
             return 2

@@ -16,7 +16,7 @@ Connects the SuperAgent Core to task sources and evaluation. The Core is used on
 | `superagent_adapter/analysis.py` | Summarises a Core output (operators, selection modes, failures, usage, grades, diagnostics) |
 | `superagent_adapter/cli.py` | Command-line entry |
 | `launchers/colab/` | Scripts to run the Core on Google Colab and keep the session alive |
-| `examples/` | Example price table and batch plan |
+| `examples/prices.example.yaml` | Price table for cost queries |
 
 ## Primary result
 
@@ -32,7 +32,7 @@ it to finalize its latest valid submission.
 Run the commands from the repository root.
 
 ```bash
-python -m pip install './core[demo]' ./adapter
+python -m pip install -r requirements.txt
 ```
 
 ```bash
@@ -55,8 +55,10 @@ python -m superagent_adapter.cli grade --core-output core_out --sample task/data
 ```
 
 ```bash
-python -m superagent_adapter.cli batch --plan adapter/examples/batch_plan.example.yaml --results batch_results.json
+python -m superagent_adapter.cli batch --plan "$PLAN" --results batch_results.json
 ```
+
+Set `PLAN` to your YAML batch plan. [Batch plan format](superagent_adapter/batch.py)
 
 ```bash
 python -m superagent_adapter.cli cost --core-output core_out --prices adapter/examples/prices.example.yaml
@@ -66,7 +68,7 @@ The report includes the latest cursor, attempt states, known token counts and th
 each priced currency. Pass `--after-cursor RUN_ID:RECEIPT_SEQ` to list changed attempt IDs since that
 cursor while retaining totals for the run. Pass `--process-exited` only after confirming Core has
 stopped if it could not record a final status. Adapter reports unresolved usage or prices as unknown.
-The included table uses course prices. Use a dated price table for provider reconciliation.
+The included table applies the course's standard input price to all input tokens, including cache hits. Use a separate dated price table for provider reconciliation.
 
 ```bash
 python -m superagent_adapter.cli analyze --core-output core_out --grades results/grades.json --out analysis

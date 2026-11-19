@@ -23,23 +23,23 @@ Example classification contract. Paths are relative to prepared `data/`. The sam
 ```yaml
 version: 1
 metric: accuracy
-classes: [setosa, versicolor, virginica]
+classes: [class_a, class_b]
 sample: sample_predictions.csv
 inference_inputs: [val.csv, test.csv, sample_predictions.csv]
 validation:
   format: csv
   path: val_labels.csv
   id: id
-  label: species
+  label: label
 input_bindings:
-  train: {format: csv, path: train.csv, id: id, label: species, features: [sepal_length, sepal_width]}
-  validation: {format: csv, path: val.csv, id: id, features: [sepal_length, sepal_width]}
-  test: {format: csv, path: test.csv, id: id, features: [sepal_length, sepal_width]}
+  train: {format: csv, path: train.csv, id: id, label: label, features: [feature_a, feature_b]}
+  validation: {format: csv, path: val.csv, id: id, features: [feature_a, feature_b]}
+  test: {format: csv, path: test.csv, id: id, features: [feature_a, feature_b]}
 ```
 
-Bind all features you want available to the solution. Each split specifies `path` or `glob`. Only the training binding has a `label`. For CSV columns containing relative paths to image or text files, list them under `file_features`. Core copies the named assets into the appropriate view. Set `shared_id_domain: true` when train and validation use the same ID domain.
+Bind all features you want available to the solution. Each split specifies `path` or `glob`. Only the training binding has a `label`. For CSV columns containing relative paths to image or text files, list them under `file_features`. Core copies the named assets into the appropriate view. Set `shared_id_domain: true` when the IDs identify the same entities across the three splits. Core then checks that training, validation and test IDs are pairwise disjoint.
 
-For TFRecord Example shards, specify `format: tfrecord` and the feature names. The `validation` truth locator has its own `glob` and `label`. Omit the validation ID to use `relative/shard:zero_based_index`. Core projects fields without changing shard names or record order. The bundled Iris data and the conventional flower `train/val/test` TFRecord layout can infer bindings from `task.yaml` and the prepared data.
+For TFRecord Example shards, specify `format: tfrecord` and the feature names. The `validation` truth locator has its own `glob` and `label`. Omit the validation ID to use `relative/shard:zero_based_index`. Core projects fields without changing shard names or record order. It can infer bindings for conventional CSV and TFRecord layouts. Use explicit bindings for a course task.
 
 Use `encoding: probability` and sample columns in the exact `classes` order for probability outputs. `accuracy` accepts labels or probabilities. `log_loss` requires probabilities. The task's sample controls the output columns and test order. Keep test answers outside the task.
 
@@ -58,7 +58,7 @@ Support `--predict-only --model-dir ... --data-dir ... --output-dir ...` in the 
 
 Each published `final/` version contains `solution.py`, `model/`, both prediction files, `source.json`, `verification.json`, `inference_inputs.json` and a content manifest. Use the resolved version and the inference view for replay. Publish history keeps the two latest full model versions.
 
-For resumable trials, see `superagent.training.save_torch` and `restore_torch` or `save_checkpoint` and `resume_path` for other frameworks. Call `restore_torch` before the first optimizer update so updates can be counted. Persist the completed epoch, optimizer state and cumulative steps, and report measured times for the next epoch and for validation and prediction. Each promotion requires evidence that state was restored from the selected parent and that training advanced. A verified prediction remains a candidate when its optional checkpoint is unusable. [Synthetic image reference implementation](examples/flower_baseline.py)
+For resumable trials, see `superagent.training.save_torch` and `restore_torch` or `save_checkpoint` and `resume_path` for other frameworks. Call `restore_torch` before the first optimizer update so updates can be counted. Persist the completed epoch, optimizer state and cumulative steps, and report measured times for the next epoch and for validation and prediction. Each promotion requires evidence that state was restored from the selected parent and that training advanced. A verified prediction remains a candidate when its optional checkpoint is unusable.
 
 ## Pretrained models and experience
 

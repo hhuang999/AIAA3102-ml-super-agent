@@ -5,10 +5,22 @@
 set -euo pipefail
 CORE=$1; ADAPTER=$2; TASK=$3; OUT=$4
 mkdir -p "$OUT"
-EXCL=(--exclude=.git --exclude=.venv --exclude=__pycache__ --exclude=.pytest_cache
-      --exclude=.ruff_cache --exclude='*.egg-info' --exclude=build --exclude=dist
-      --exclude=tests --exclude=.env)
-tar czf "$OUT/core.tar.gz" "${EXCL[@]}" -C "$CORE" .
-tar czf "$OUT/adapter.tar.gz" "${EXCL[@]}" -C "$ADAPTER" .
-tar czf "$OUT/task.tar.gz" -C "$(dirname "$TASK")" --transform "s,^$(basename "$TASK"),task," "$(basename "$TASK")"
+OUT=$(realpath "$OUT")
+
+pack_source() (
+    cd "$1"
+    archive=$2
+    package=$3
+    shift 3
+    {
+        printf '%s\0' pyproject.toml README.md "$@"
+        find "$package" -type d \( -name tests -o -name __pycache__ \) -prune -o \
+            -type f -name '*.py' ! -name 'test_*.py' ! -name conftest.py -print0
+    } | tar -czf "$archive" --null -T -
+)
+
+pack_source "$CORE" "$OUT/core.tar.gz" superagent requirements.txt .env.example \
+    configs/single_model.yaml superagent/resources/default_config.yaml superagent/resources/method_catalog.yaml
+pack_source "$ADAPTER" "$OUT/adapter.tar.gz" superagent_adapter examples/prices.example.yaml
+tar -czf "$OUT/task.tar.gz" -C "$TASK" --transform 'flags=r;s,^\.,task,' .
 ls -la "$OUT"
