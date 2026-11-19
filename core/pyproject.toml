@@ -28,6 +28,3 @@ include = ["superagent*"]
 
 [tool.setuptools.package-data]
 superagent = ["resources/*.yaml"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]

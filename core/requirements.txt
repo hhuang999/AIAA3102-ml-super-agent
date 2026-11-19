@@ -6,7 +6,6 @@ numpy>=1.26
 pandas>=2.1             # data profiling, prediction checks, ensembling
 huggingface_hub>=0.24   # fetch_models (pretrained weights download)
 sentence-transformers>=3.0  # experience-store embeddings (Qwen3-Embedding)
-pytest>=8.0             # test suite
 
 # --- Libraries available to generated solution scripts ---
 scikit-learn>=1.4

@@ -70,9 +70,3 @@ Prepare the [local Qwen cache](../README.md#configure-deepseek-chat-and-local-qw
 
 `prepare` and `grade` can run on a different machine from `run`, so the answers never need to be on the
 machine that runs the Core.
-
-## Tests
-
-```bash
-python -m pytest -q adapter/tests
-```

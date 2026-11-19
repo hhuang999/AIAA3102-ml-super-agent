@@ -10,26 +10,24 @@ SuperAgent generates, trains and improves Python models for classification tasks
 
 ## Install on Linux or WSL
 
-Use Python 3.11 or newer. The CPU example and test dependencies install without a GPU framework.
+Use Python 3.11 or newer. The CPU example installs without a GPU framework.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e './core[demo,test]' -e ./adapter
+python -m pip install -e './core[demo]' -e ./adapter
 ```
 
 For generated scripts that need additional model libraries, install the relevant dependencies from [core/requirements.txt](core/requirements.txt) in the same runner environment. Supply the appropriate PyTorch build for a CUDA task. Generated scripts run under the account launching the agent. Use an isolated account or container for untrusted jobs.
 
-## Smoke test without an API account
+## Check the installation
 
-Run from the repository root. The test uses a local HTTP fixture and production CLI and Adapter entry points. It exercises code generation into a real runner, model reload, checkpoint continuation, independent scoring, Adapter submission, 524, deadline, interruption and cost boundaries. Use a new output directory.
+Check both command-line entry points before configuring credentials.
 
 ```bash
-python core/tests/acceptance/run_acceptance.py outputs/acceptance
-python -m pytest -q -rs -m 'not llm and not slow' core/tests adapter/tests
+python -m superagent.run --help
+python -m superagent_adapter.cli --help
 ```
-
-The smoke submission is `outputs/acceptance/grades/submission.csv`. The fixture labels and generated data live under `outputs/acceptance/`. The final artifact and its score are in `outputs/acceptance/normal/final/`, and the structured results are in `outputs/acceptance/evidence.json`.
 
 ## Configure DeepSeek chat and local Qwen embeddings
 

@@ -9,7 +9,7 @@ session alive during long runs. `remote/` runs on the Colab machine, `local/` on
 |---|---|---|
 | `launch.example.json` | — | Template of `launch.json`: paths on the Colab machine and the Core options |
 | `local/pack.sh` | local | Packs the Core, the adapter and a task directory into three archives |
-| `remote/setup.sh` | Colab | Creates a Python 3.11 environment, installs both projects, downloads the pretrained models, runs the Core tests |
+| `remote/setup.sh` | Colab | Creates a Python 3.11 environment, installs both projects, downloads pretrained models and checks both CLIs |
 | `remote/start_setup.py` | Colab | Starts `setup.sh` in the background |
 | `remote/run.py` | Colab | Runs the Core through the adapter with the settings of `launch.json` (one task, or a batch plan given as `batch_plan`) |
 | `remote/start_run.py` | Colab | Starts `run.py` in the background |

@@ -16,7 +16,6 @@ cache/
 *.pkl
 
 # Local development documents and credentials
-/docs/superagent_develop_docs/
 /1.group_HPC.txt
 /2.server_hpc.txt
 secrets.env
@@ -26,3 +25,8 @@ secrets.env
 /outputs/
 /example_tasks/
 /pretrained_cache/
+
+# Local development materials
+/docs/
+/.local-archive/
+/.ruff_cache/
