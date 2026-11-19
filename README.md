@@ -26,14 +26,27 @@ Run from the repository root. The test uses a local HTTP fixture and production 
 
 ```bash
 python core/tests/acceptance/run_acceptance.py outputs/acceptance
-python -m pytest -q -rs -m 'not llm and not embed_api and not slow' core/tests adapter/tests
+python -m pytest -q -rs -m 'not llm and not slow' core/tests adapter/tests
 ```
 
 The smoke submission is `outputs/acceptance/grades/submission.csv`. The fixture labels and generated data live under `outputs/acceptance/`. The final artifact and its score are in `outputs/acceptance/normal/final/`, and the structured results are in `outputs/acceptance/evidence.json`.
 
+## Configure DeepSeek chat and local Qwen embeddings
+
+Copy [core/.env.example](core/.env.example) to `.env` at the repository root and set `DEEPSEEK_API_KEY` to a key from DeepSeek. Generation and judgement use `deepseek-flash` at `https://api.deepseek.com/chat/completions`. Leave `SUPERAGENT_LLM_BASE_URL` unset for the official route. [DeepSeek API documentation](https://api-docs.deepseek.com/)
+
+From the repository root, install the local encoder and prepare its weights once in the runner environment:
+
+```bash
+python -m pip install -e './core[embedding]'
+python -m superagent.fetch_models --only experience_embedding
+```
+
+The setup command downloads `Qwen/Qwen3-Embedding-0.6B` and checks a local forward pass. During a run, experience retrieval encodes text on the CPU using the cached weights. Set `SUPERAGENT_PRETRAIN_DIR` to share a cache between runs. If the weights or encoder are unavailable, Core logs a warning and uses keyword retrieval. [Qwen model card](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B)
+
 ## Run the Iris classification example
 
-Copy [core/.env.example](core/.env.example) to `.env` at the repository root and fill in `DEEPSEEK_API_KEY`, or export that variable. The default API route is DeepSeek Chat Completions. The smoke test supplies its own local endpoint. Keep task test labels outside the task directory.
+Run from the same directory and keep task test labels outside the task directory.
 
 ```bash
 python core/examples/make_example_tasks.py --out example_tasks --tasks tabular_small --contract

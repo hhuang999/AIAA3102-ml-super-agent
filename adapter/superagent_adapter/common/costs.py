@@ -4,11 +4,11 @@ The price table is a YAML file:
 
     currency: CNY
     models:                       # chat models: price per 1M input / output tokens
-      deepseek-v4.1-flash-1017: {input_per_million: 2.0, output_per_million: 8.0}
-    embeddings:                   # embedding models: price per 1M tokens
-      qwen3-embedding-0.6b: {per_million: 0.5}
+      deepseek-flash: {input_per_million: 2.0, output_per_million: 8.0}
 
-Output tokens include reasoning tokens. Missing usage remains unknown; totals below are known subtotals.
+Output tokens include reasoning tokens. Local embedding records report compute seconds.
+Historical hosted embedding records can use an optional embeddings price table.
+Missing usage remains unknown; totals below are known subtotals.
 """
 
 from __future__ import annotations

@@ -7,7 +7,6 @@ import json
 import queue
 import time
 import logging
-import os
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -119,90 +118,27 @@ def rrf_fuse(
     return scored
 
 
-class Embedder:
-    """Common part of the embedding backends: usage accounting and the usage log."""
+class LocalEmbedder:
+    """Encode experience records in process and log local compute and token usage."""
 
     def __init__(
-        self,
-        model_name: str,
-        backend: str,
-        price_per_million: float,
-        usage_log: Path | None,
+        self, model_name: str, snapshot: str, device: str, usage_log: Path | None
     ) -> None:
-        self.model_name = model_name
-        self.backend = backend
-        self.price = float(price_per_million)
-        self.usage_log = usage_log
-        self.totals = {"seconds": 0.0, "calls": 0, "tokens": 0, "cost": 0.0}
-        self._lock = threading.Lock()
-
-    def _embed(self, texts: list[str]) -> tuple[np.ndarray, int]:
-        """Return (one unit-length vector per text, number of tokens used)."""
-        raise NotImplementedError
-
-    def encode(self, texts: Sequence[str], purpose: str) -> np.ndarray:
-        start = time.monotonic()
-        vecs, n_tokens = self._embed(list(texts))
-        seconds = time.monotonic() - start
-        cost = None if n_tokens is None else n_tokens * self.price / 1e6
-        with self._lock:
-            self.totals["seconds"] += seconds
-            self.totals["calls"] += 1
-            self.totals["tokens"] += n_tokens or 0
-            self.totals["cost"] += cost or 0
-        if self.usage_log is not None:
-            append_jsonl(
-                self.usage_log,
-                {
-                    "ts": now_iso(),
-                    "model": self.model_name,
-                    "backend": self.backend,
-                    "purpose": purpose,
-                    "seconds": seconds,
-                    "num_texts": len(texts),
-                    "tokens": n_tokens,
-                    "cost": cost,
-                },
-            )
-        return vecs
-
-
-def unit_rows(vecs: np.ndarray) -> np.ndarray:
-    """Scale every row to length 1 (rows of zeros stay zero)."""
-    vecs = np.asarray(vecs, dtype=np.float32)
-    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-    return vecs / np.where(norms > 0, norms, 1.0)
-
-
-class LocalEmbedder(Embedder):
-    """Runs a sentence-transformers model on this machine."""
-
-    def __init__(
-        self,
-        model_name: str,
-        device: str,
-        cache_dir: str | None,
-        price_per_million: float,
-        usage_log: Path | None,
-    ) -> None:
-        super().__init__(model_name, "local", 0.0, usage_log)
         import torch
         from sentence_transformers import SentenceTransformer
 
+        self.model_name = model_name
+        self.usage_log = usage_log
+        self.totals = {"seconds": 0.0, "calls": 0, "tokens": 0, "cost": 0.0}
+        self._lock = threading.Lock()
         if device == "cuda" and not torch.cuda.is_available():
             log.warning(
                 "experience.vector.device is cuda but no GPU is available; using cpu"
             )
             device = "cpu"
-        kwargs = {"model_kwargs": {"dtype": torch.float32}} if device == "cpu" else {}
-        try:
-            self.model = SentenceTransformer(
-                model_name, device=device, cache_folder=cache_dir, **kwargs
-            )
-        except TypeError:
-            self.model = SentenceTransformer(
-                model_name, device=device, cache_folder=cache_dir
-            )
+        self.model = SentenceTransformer(snapshot, device=device, local_files_only=True)
+        if device == "cpu":
+            self.model.float()
         self.model.max_seq_length = 1024
         log.info(
             "local embedding: %s, device=%s dtype=%s",
@@ -211,65 +147,39 @@ class LocalEmbedder(Embedder):
             next(self.model.parameters()).dtype,
         )
 
-    def _embed(self, texts: list[str]) -> tuple[np.ndarray, int]:
-        try:
-            tok = self.model.tokenizer(
-                texts, truncation=True, max_length=self.model.max_seq_length
+    def encode(self, texts: Sequence[str], purpose: str) -> np.ndarray:
+        start = time.monotonic()
+        vecs, n_tokens = self._embed(list(texts))
+        seconds = time.monotonic() - start
+        with self._lock:
+            self.totals["seconds"] += seconds
+            self.totals["calls"] += 1
+            self.totals["tokens"] += n_tokens
+        if self.usage_log is not None:
+            append_jsonl(
+                self.usage_log,
+                {
+                    "ts": now_iso(),
+                    "model": self.model_name,
+                    "backend": "local",
+                    "purpose": purpose,
+                    "seconds": seconds,
+                    "num_texts": len(texts),
+                    "tokens": n_tokens,
+                    "cost": 0.0,
+                },
             )
-            n_tokens = int(sum(len(x) for x in tok["input_ids"]))
-        except Exception:  # noqa: BLE001
-            n_tokens = int(sum(len(t.split()) for t in texts))
+        return vecs
+
+    def _embed(self, texts: list[str]) -> tuple[np.ndarray, int]:
+        tok = self.model.tokenizer(
+            texts, truncation=True, max_length=self.model.max_seq_length
+        )
+        n_tokens = sum(len(ids) for ids in tok["input_ids"])
         vecs = self.model.encode(
             texts, batch_size=8, normalize_embeddings=True, show_progress_bar=False
         )
         return np.asarray(vecs, dtype=np.float32), n_tokens
-
-
-class ApiEmbedder(Embedder):
-    """Calls an OpenAI-compatible embeddings endpoint."""
-
-    BATCH = 16
-
-    def __init__(
-        self,
-        model_name: str,
-        base_url: str,
-        api_key: str,
-        timeout: float,
-        price_per_million: float,
-        usage_log: Path | None,
-    ) -> None:
-        super().__init__(model_name, "api", price_per_million, usage_log)
-        from openai import OpenAI
-
-        self._client = OpenAI(
-            base_url=base_url, api_key=api_key, timeout=timeout, max_retries=1
-        )
-
-    def _embed(self, texts: list[str]) -> tuple[np.ndarray, int]:
-        rows: list[list[float]] = []
-        n_tokens = 0
-        complete = True
-        for start in range(0, len(texts), self.BATCH):
-            batch = [t if t.strip() else " " for t in texts[start : start + self.BATCH]]
-            resp = self._client.embeddings.create(model=self.model_name, input=batch)
-            data = sorted(resp.data, key=lambda d: d.index)
-            if len(data) != len(batch):
-                raise RuntimeError(
-                    f"embeddings endpoint returned {len(data)} vectors for {len(batch)} texts"
-                )
-            rows.extend(d.embedding for d in data)
-            usage = getattr(resp, "usage", None)
-            used = getattr(usage, "total_tokens", None) or getattr(
-                usage, "prompt_tokens", None
-            )
-            if used is None:
-                complete = False
-            else:
-                n_tokens += int(used)
-        return unit_rows(
-            np.asarray(rows, dtype=np.float32)
-        ), n_tokens if complete else None
 
 
 MAX_EMBED_FAILURES = 5
@@ -280,7 +190,7 @@ class ExperienceStore:
         self,
         cfg: Mapping[str, Any],
         path: Path,
-        embedder: Embedder | None,
+        embedder: LocalEmbedder | None,
         *,
         background=False,
     ) -> None:
@@ -475,31 +385,15 @@ def make_embedder(
     exp_cfg: Mapping[str, Any],
     local_dir: str,
     usage_log: Path | None,
-    environ: Mapping[str, str] | None = None,
-) -> Embedder | None:
-    """Build the embedding backend chosen in the configuration. None means keyword search only."""
+) -> LocalEmbedder | None:
+    """Load local weights; an unavailable encoder leaves keyword retrieval active."""
     vec = exp_cfg.get("vector", {})
     if not exp_cfg.get("enabled", True) or not vec.get("enabled", True):
         return None
-    price = float(vec.get("price_per_million", 0.0))
+    model = str(vec["model"])
     try:
-        if str(vec.get("backend", "local")) == "api":
-            env = os.environ if environ is None else environ
-            key = env.get(str(vec.get("api_key_env", "")), "")
-            if not key:
-                raise RuntimeError(
-                    f"environment variable {vec.get('api_key_env')} is not set"
-                )
-            return ApiEmbedder(
-                str(vec["api_model"]),
-                str(vec["api_base_url"]),
-                key,
-                float(vec.get("api_timeout_seconds", 60)),
-                price,
-                usage_log,
-            )
-        model = str(vec["model"])
-        if not Path(model).is_dir():
+        snapshot = model
+        if not Path(snapshot).is_dir():
             from .catalog import load_manifest
 
             rec = (load_manifest(local_dir) or {}).get("experience_embedding", {})
@@ -508,39 +402,19 @@ def make_embedder(
                 and rec.get("state") == "forward_ok"
                 and Path(rec["snapshot"]).is_dir()
             ):
-                model = rec["snapshot"]
+                snapshot = rec["snapshot"]
             else:
                 from huggingface_hub import snapshot_download
 
-                model = snapshot_download(
+                snapshot = snapshot_download(
                     model, cache_dir=str(Path(local_dir) / "hub"), local_files_only=True
                 )
-        return LocalEmbedder(
-            model,
-            str(vec.get("device", "cpu")),
-            str(Path(local_dir) / "hub"),
-            price,
-            usage_log,
-        )
-    except Exception as exc:  # noqa: BLE001
+        return LocalEmbedder(model, snapshot, str(vec.get("device", "cpu")), usage_log)
+    except Exception as exc:  # noqa: BLE001 - keyword retrieval is available without local weights
         log.warning(
-            "could not set up the embedding model (%s); experience search uses keywords only",
+            "could not load local embedding model %s (%s); using keywords only. "
+            "To prepare the model, run python -m superagent.fetch_models --only experience_embedding",
+            model,
             exc,
         )
         return None
-
-
-def vector_key_missing(
-    exp_cfg: Mapping[str, Any], environ: Mapping[str, str]
-) -> str | None:
-    """Name of the API key variable that is required but not set, or None."""
-    vec = exp_cfg.get("vector", {})
-    if (
-        exp_cfg.get("enabled", True)
-        and vec.get("enabled", True)
-        and str(vec.get("backend", "local")) == "api"
-    ):
-        name = str(vec.get("api_key_env", ""))
-        if not environ.get(name):
-            return name
-    return None

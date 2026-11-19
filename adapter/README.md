@@ -33,7 +33,7 @@ it to finalize its latest valid submission.
 Run the commands from the repository root.
 
 ```bash
-python -m pip install -e './core[demo,test]' -e ./adapter
+python -m pip install -e './core[demo,test,embedding]' -e ./adapter
 ```
 
 ```bash
@@ -44,7 +44,7 @@ When using `--contract`, the adapter rewrites references to the renamed sample i
 `inference_inputs`. An isolation check requires a private split with files to compare.
 
 ```bash
-python -m superagent_adapter.cli run --task-dir task --output-dir core_out --config config.yaml \
+python -m superagent_adapter.cli run --task-dir task --output-dir core_out \
   --core-python <python with superagent> --cwd <dir with .env> --time-limit-secs 28800 \
   --higher-is-better false --num-gpus 1 --num-cpus 12 --parallel 2 --pretrained-mode catalog
 ```
@@ -65,6 +65,8 @@ python -m superagent_adapter.cli cost --core-output core_out --prices adapter/ex
 ```bash
 python -m superagent_adapter.cli analyze --core-output core_out --grades results/grades.json --out analysis
 ```
+
+Prepare the [local Qwen cache](../README.md#configure-deepseek-chat-and-local-qwen-embeddings) in the runner environment. Put `DEEPSEEK_API_KEY` in the launch directory's `.env` for the official chat API. Set the same `SUPERAGENT_PRETRAIN_DIR` for setup and launch when using different directories.
 
 `prepare` and `grade` can run on a different machine from `run`, so the answers never need to be on the
 machine that runs the Core.

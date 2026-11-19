@@ -7,8 +7,6 @@ resources:
   num_gpus: 0
   num_cpus: 2
   parallel: 1
-experience:
-  enabled: false
 pretrained:
   mode: "off"
 final:

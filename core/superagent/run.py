@@ -28,7 +28,7 @@ from .control import build_state, detect_gpus, load_controller_class, make_contr
 from .control.hardware import cuda_mask
 from .errors import InvalidInputError, LLMUnavailableError, StructuredOutputError
 from .executor import Executor
-from .experience import ExperienceStore, make_embedder, vector_key_missing
+from .experience import ExperienceStore, make_embedder
 from .llm import Field
 from .llm.gateway import ASSESSMENT_ROLES, LLMGateway, OpenAITransport, abort_decision
 from .profiler import SAMPLE_NAME, profile
@@ -166,10 +166,6 @@ def run_task(
             api_key = os.environ.get(key_env, "")
             if not api_key:
                 raise InvalidInputError(f"environment variable {key_env} is not set (it can also be put in a .env file)")
-            missing = vector_key_missing(cfg["experience"], os.environ)
-            if missing and cfg["control"]["cost_cap"]["mode"]!="enforce":
-                raise InvalidInputError(f"environment variable {missing} is not set; it is needed because "
-                                        "experience.vector.backend is 'api' (set it, or use backend 'local')")
             if int(cfg["resources"]["num_cpus"]) < int(cfg["resources"]["parallel"]):
                 raise InvalidInputError("resources.num_cpus must be at least resources.parallel")
             load_controller_class(str(cfg["control"]["controller"]))
@@ -241,11 +237,7 @@ def run_task(
 
         experience = None
         if cfg["experience"]["enabled"]:
-            if cap["mode"]=="enforce" and cfg["experience"]["vector"]["backend"]=="api":
-                log.info("hard chat cap active: using local keyword retrieval instead of unreserved remote embeddings")
-                embedder = None
-            else:
-                embedder = make_embedder(cfg["experience"], local_dir, paths.embedding_calls)
+            embedder = make_embedder(cfg["experience"], local_dir, paths.embedding_calls)
             experience = ExperienceStore(cfg["experience"], paths.records, embedder, background=True)
         tree = SearchTree(direction)
         executor = Executor(paths.runs, paths.prepared, int(cfg["resources"]["parallel"]), int(cfg["resources"]["num_cpus"]),

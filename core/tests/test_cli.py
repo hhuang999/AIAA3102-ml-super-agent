@@ -106,14 +106,3 @@ def test_policy_scan():
     code = "import timm\nm = timm.create_model('resnet18', pretrained=True)\n# m = AutoModel.from_pretrained('x')\n"
     hits = policy_scan(code, ["pretrained=True", "from_pretrained("])
     assert [h[0] for h in hits] == [2]
-
-
-def test_api_embedding_backend_needs_its_key(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "dummy")
-    monkeypatch.delenv("AIHUBMIX_API_KEY", raising=False)
-    monkeypatch.chdir(tmp_path)
-    cfg = tmp_path / "c.yaml"
-    cfg.write_text("experience:\n  vector:\n    backend: api\n")
-    out = tmp_path / "out"
-    assert main(["--task-dir", str(task(tmp_path)), "--output-dir", str(out), "--config", str(cfg)]) == 3
-    assert "AIHUBMIX_API_KEY" in json.loads((out / "status.json").read_text())["error"]

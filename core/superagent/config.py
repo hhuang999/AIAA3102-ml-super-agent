@@ -26,7 +26,7 @@ ENUM_KEYS: dict[tuple[str, ...], tuple[str, ...]] = {
     ("llm", "generation", "reasoning_effort"): ("low", "high", "max"),
     ("llm", "judgement", "reasoning_effort"): ("low", "high", "max"),
     ("experience", "vector", "device"): ("cuda", "cpu"),
-    ("experience", "vector", "backend"): ("local", "api"),
+    ("experience", "vector", "backend"): ("local",),
     ("pretrained", "mode"): ("catalog", "open", "off"),
     ("control", "time_allocation", "mode"): ("off", "observe", "enforce"),
     ("search", "reward_mode"): ("per_step", "chain_end"),

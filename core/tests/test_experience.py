@@ -70,62 +70,47 @@ def test_keyword_only_when_vectors_off(tmp_path):
 
 
 @pytest.mark.slow
-def test_real_embedding_model(tmp_path):
-    import os
+def test_real_embedding_model(tmp_path, monkeypatch):
     from pathlib import Path
 
+    from superagent.config import build_config
     from superagent.experience import make_embedder
+    from superagent.utils import read_jsonl
 
-    local = Path(os.environ.get("SUPERAGENT_PRETRAIN_DIR", "pretrained_cache")).resolve()
-    if not (local / "hub" / "models--Qwen--Qwen3-Embedding-0.6B").exists():
+    cfg = build_config(None)
+    cache = Path(cfg["pretrained"]["local_dir"])
+    if not (cache / "hub" / "models--Qwen--Qwen3-Embedding-0.6B").exists():
         pytest.skip("embedding model not downloaded")
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    try:
-        emb = make_embedder({"enabled": True, "vector": {"enabled": True, "model": "Qwen/Qwen3-Embedding-0.6B", "device": "cuda", "backend": "local",
-                                                         "price_per_million": 0.5}}, str(local), tmp_path / "emb.jsonl")
-    finally:
-        os.environ.pop("HF_HUB_OFFLINE", None)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    emb = make_embedder(cfg["experience"], str(cache), tmp_path / "emb.jsonl")
     assert emb is not None
     s = ExperienceStore({"candidates_per_list": 50, "keyword_weight": 0.0, "rrf_k": 60}, tmp_path / "r.json", emb)
     s.add(rec("A", plan="gradient boosted decision trees with early stopping"))
     s.add(rec("B", plan="convolutional neural network for images with augmentation"))
     got = s.search("image CNN with random flips", 1)
     assert got[0].record_id == "B"
-    assert emb.totals["tokens"] > 0 and (tmp_path / "emb.jsonl").exists()
+    assert emb.totals["tokens"] > 0
+    usage = read_jsonl(tmp_path / "emb.jsonl")
+    assert {row["backend"] for row in usage} == {"local"}
+    assert {row["model"] for row in usage} == {"Qwen/Qwen3-Embedding-0.6B"}
+    assert {row["cost"] for row in usage} == {0.0}
 
 
-def test_unit_rows():
-    import numpy as np
-
-    from superagent.experience import unit_rows
-
-    out = unit_rows(np.array([[3.0, 4.0], [0.0, 0.0]]))
-    assert out[0].tolist() == pytest.approx([0.6, 0.8]) and out[1].tolist() == [0.0, 0.0]
-
-
-def test_vector_key_missing():
-    from superagent.experience import vector_key_missing
-
-    api = {"enabled": True, "vector": {"enabled": True, "backend": "api", "api_key_env": "SOME_KEY"}}
-    assert vector_key_missing(api, {}) == "SOME_KEY"
-    assert vector_key_missing(api, {"SOME_KEY": "x"}) is None
-    assert vector_key_missing({"enabled": True, "vector": {"enabled": True, "backend": "local"}}, {}) is None
-    assert vector_key_missing({"enabled": False, "vector": {"enabled": True, "backend": "api", "api_key_env": "K"}}, {}) is None
-
-
-def test_api_backend_without_key_falls_back_to_keywords(tmp_path):
+def test_missing_local_snapshot_degrades_to_keywords(tmp_path):
+    from superagent.config import load_defaults
     from superagent.experience import make_embedder
 
-    cfg = {"enabled": True, "vector": {"enabled": True, "backend": "api", "api_model": "m", "api_base_url": "http://127.0.0.1:9/v1",
-                                       "api_key_env": "SOME_KEY", "api_timeout_seconds": 2, "price_per_million": 0.5}}
-    assert make_embedder(cfg, str(tmp_path), None, environ={}) is None
+    assert make_embedder(load_defaults()["experience"], str(tmp_path), None) is None
 
 
-def test_unreachable_embedding_endpoint_degrades_to_keywords(tmp_path):
-    """The endpoint address accepts no connections, so every embedding request really fails."""
-    from superagent.experience import MAX_EMBED_FAILURES, ApiEmbedder
+def test_failing_local_encoder_degrades_to_keywords(tmp_path):
+    from superagent.experience import MAX_EMBED_FAILURES
 
-    emb = ApiEmbedder("m", "http://127.0.0.1:9/v1", "not-a-real-key", 2, 0.5, tmp_path / "emb.jsonl")
+    class UnavailableEncoder:
+        def encode(self, texts, purpose):
+            raise RuntimeError("local inference failed")
+
+    emb = UnavailableEncoder()
     s = ExperienceStore({"candidates_per_list": 50, "keyword_weight": 0.5, "rrf_k": 60}, tmp_path / "r.json", emb)
     assert s.add(rec("A", plan="gradient boosting trees"))
     assert s.add(rec("B", plan="convolutional network"))
@@ -143,21 +128,3 @@ def test_vector_only_weight_still_answers_without_vectors(tmp_path):
     s.add(rec("A", plan="gradient boosting trees"))
     s.add(rec("B", plan="convolutional network"))
     assert s.search("convolutional", 1)[0].record_id == "B"
-
-
-@pytest.mark.embed_api
-def test_real_embedding_endpoint(tmp_path):
-    import os
-
-    from superagent.config import load_defaults
-    from superagent.experience import make_embedder
-
-    exp = load_defaults()["experience"]
-    exp["vector"]["backend"] = "api"
-    emb = make_embedder(exp, str(tmp_path), tmp_path / "emb.jsonl", environ=os.environ)
-    assert emb is not None
-    s = ExperienceStore({"candidates_per_list": 50, "keyword_weight": 0.0, "rrf_k": 60}, tmp_path / "r.json", emb)
-    s.add(rec("A", plan="gradient boosted decision trees with early stopping"))
-    s.add(rec("B", plan="convolutional neural network for images with augmentation"))
-    assert s.search("image CNN with random flips", 1)[0].record_id == "B"
-    assert emb.totals["tokens"] > 0 and (tmp_path / "emb.jsonl").exists()

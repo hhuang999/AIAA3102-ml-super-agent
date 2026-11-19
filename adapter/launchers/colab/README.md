@@ -33,8 +33,10 @@ colab --auth oauth2 new -s run1 --gpu L4
 colab --auth oauth2 upload -s run1 upload/core.tar.gz upload/adapter.tar.gz upload/task.tar.gz /content/
 ```
 
-Upload `remote/*`, `launch.json` (copied from `launch.example.json` and edited), the Core config file and
-the `.env` file with the API keys to `/content/launch/`, then start the setup:
+Upload `remote/*`, `launch.json` (copied from `launch.example.json`) and a `.env` file containing
+`DEEPSEEK_API_KEY` to `/content/launch/`. The default launch calls the official DeepSeek API.
+Setup prepares the Qwen encoder in `/content/pretrained_cache` for local inference. For custom
+Core settings, upload a YAML file and set `config` in `launch.json` to its path. Then start setup:
 
 ```bash
 colab --auth oauth2 exec -s run1 -f remote/start_setup.py

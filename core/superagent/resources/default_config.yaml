@@ -177,14 +177,9 @@ experience:
   enabled: true
   vector:
     enabled: true                  # false = keyword search only.
-    backend: "local"               # local = load the model on this machine | api = call an embeddings endpoint.
+    backend: "local"               # Run experience embeddings in process with cached weights.
     model: "Qwen/Qwen3-Embedding-0.6B"   # local backend: model id on the model hub.
     device: "cpu"                  # Keep training GPU free; opt in to cuda after profiling co-location.
-    api_model: "qwen3-embedding-0.6b"    # api backend: model name at the endpoint.
-    api_base_url: "https://aihubmix.com/v1"   # api backend: OpenAI-compatible embeddings endpoint.
-    api_key_env: "AIHUBMIX_API_KEY"  # api backend: environment variable (or .env entry) holding the key.
-    api_timeout_seconds: 60        # api backend: time limit of one request.
-    price_per_million: 0.5         # Accounting price per 1M embedded tokens (remote backend only).
   planning: "evidence"             # evidence | two_stage | single
   min_similarity: 0.35             # Tune cosine floor on labeled queries.
   keyword_weight: 0.5

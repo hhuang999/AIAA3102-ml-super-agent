@@ -16,7 +16,7 @@ from typing import Any
 
 from .catalog import MANIFEST_NAME, load_catalog
 from .config import build_config
-from .utils import atomic_write_json, now_iso
+from .utils import atomic_write_json, load_env_file, now_iso
 
 EMBEDDING_ENTRY_ID = "experience_embedding"
 IGNORE_PATTERNS = ["*.h5", "*.msgpack", "*.ot", "*.onnx", "flax_model*", "tf_model*", "rust_model*", "*.tflite",
@@ -71,7 +71,7 @@ def fetch(cfg: dict[str, Any], only: list[str] | None = None) -> list[dict[str, 
             continue
         jobs.append((str(e["id"]), e.get("hub_id"), str(e.get("fetch") or "snapshot"), e.get("example")))
     vec = cfg["experience"]["vector"]
-    if cfg["experience"]["enabled"] and vec["enabled"] and vec["backend"] == "local":
+    if cfg["experience"]["enabled"] and vec["enabled"]:
         jobs.append((EMBEDDING_ENTRY_ID, str(vec["model"]), "snapshot", None))
     results: list[dict[str, Any]] = []
     for entry_id, hub_id, how, example in jobs:
@@ -114,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config")
     ap.add_argument("--only", nargs="+", metavar="ID")
     args = ap.parse_args(argv)
+    load_env_file(Path.cwd() / ".env")
     cfg = build_config(args.config)
     results = fetch(cfg, args.only)
     ok = [r["id"] for r in results if r["ok"]]

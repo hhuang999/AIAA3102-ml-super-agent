@@ -224,15 +224,6 @@ def test_example_controller(tmp_path, monkeypatch):
     sys.modules.pop("budget_controller", None)
 
 
-def test_aihubmix_preset_is_valid():
-    from pathlib import Path
-
-    from superagent.config import build_config
-
-    c = build_config(Path(__file__).resolve().parents[1] / "configs" / "aihubmix.yaml")
-    assert c["llm"]["api_key_env"] == "AIHUBMIX_API_KEY" and c["experience"]["vector"]["backend"] == "api"
-
-
 class BrokenController(Controller):
     name = "broken"
 

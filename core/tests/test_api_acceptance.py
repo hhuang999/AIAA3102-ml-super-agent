@@ -44,12 +44,19 @@ def test_invalid_usage_detail_keeps_body_and_known_tokens(tmp_path, monkeypatch,
             "usage": usage,
         })
     client = openai.OpenAI
+
+    def reply(request):
+        assert str(request.url) == "https://api.deepseek.com/chat/completions"
+        assert request.headers["Authorization"] == "Bearer fixture"
+        assert json.loads(request.content)["model"] == "deepseek-flash"
+        return wire
+
     monkeypatch.setattr(openai, "OpenAI", lambda **kw: client(
-        http_client=httpx.Client(transport=httpx.MockTransport(lambda req: wire)), **kw,
+        http_client=httpx.Client(transport=httpx.MockTransport(reply)), **kw,
     ))
     cfg = load_defaults()["llm"]
     cfg["stream"] = stream
-    g = LLMGateway(cfg, tmp_path / "calls.jsonl", OpenAITransport("https://test.invalid", "fixture", 2))
+    g = LLMGateway(cfg, tmp_path / "calls.jsonl", OpenAITransport(cfg["base_url"], "fixture", 2))
     assert g.text("patch_coder", "system", "user", "operation").content == "ok"
     row, = read_jsonl(g.calls_log_path)
     assert (row["prompt_tokens"], row["completion_tokens"], row["reasoning_tokens"]) == (12, 2, None)

@@ -3,5 +3,4 @@
 currency: CNY
 models:
   deepseek-flash: {input_per_million: 2.0, output_per_million: 8.0}
-embeddings:
-  Qwen/Qwen3-Embedding-0.6B: {per_million: 0.5}
+# Local Qwen usage is reported as tokens and compute seconds.
