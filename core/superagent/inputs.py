@@ -11,6 +11,7 @@ import yaml
 
 from .contract import frame, image_features, records, relative, scalar
 from .errors import InvalidInputError
+from .profiler import profile
 from .utils import atomic_write_json
 
 
@@ -147,8 +148,8 @@ def _project(prepared, view, binding, classes, blocked):
     return ids, {k: field_types[k] for k in binding.features if k in field_types}
 
 
-def prepare_inputs(task, prepared, spec, root):
-    """Retain original truth exclusively in the trusted specification."""
+def prepare_inputs(task, prepared, spec, root, *, profile_config):
+    """Project bound inputs and profile only the training split."""
     try:
         raw = yaml.safe_load((task / "task.yaml").read_text(encoding="utf-8"))
         sample = relative(raw["sample"]).as_posix()
@@ -191,6 +192,7 @@ def prepare_inputs(task, prepared, spec, root):
         for types in (val_types, test_types):
             if any(train_types.get(k, v) != v for k, v in types.items()):
                 raise ValueError("TFRecord feature types differ between splits")
+        training_profile = profile(training, profile_config)
         # Publish a sample schema with neutral placeholders, independently of supplied values.
         sample_df = frame(prepared / sample)
         for c in spec.columns[1:]:
@@ -201,7 +203,7 @@ def prepare_inputs(task, prepared, spec, root):
         manifest = InputManifest(1, sample, splits)
         atomic_write_json(training / "input_manifest.json", manifest.payload())
         atomic_write_json(inference / "input_manifest.json", manifest.payload(inference=True))
-        return manifest
+        return manifest, training_profile
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise InvalidInputError(f"task.yaml input binding: {exc}") from exc
 

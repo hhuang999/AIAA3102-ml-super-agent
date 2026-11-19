@@ -226,7 +226,9 @@ def run_task(
                 raise InvalidInputError("single-model runs require task.yaml v1 and declared validation truth")
             from .inputs import prepare_inputs
 
-            manifest = prepare_inputs(task, paths.prepared, spec, out / "input_views")
+            manifest, prof = prepare_inputs(
+                task, paths.prepared, spec, out / "input_views", profile_config=cfg["profiler"],
+            )
             visible = out / "input_views/training"
         if manifest:
             import json
@@ -256,7 +258,8 @@ def run_task(
             hib, source = _judge_direction(gateway, task_desc), "llm"
         direction = Direction(hib)
 
-        prof = profile(visible, cfg["profiler"])
+        if not formal:
+            prof = profile(visible, cfg["profiler"])
         sample = paths.prepared / SAMPLE_NAME
         sample_path = sample if sample.exists() and spec is None else None
         if sample_path is None and spec is None:
