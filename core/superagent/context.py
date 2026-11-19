@@ -191,6 +191,8 @@ class RunContext:
 
     def current_run_limit(self) -> float:
         """Script time limit for the current thread's step; never beyond the time left."""
+        if self.flags.get("formal"):
+            return float(self.cfg["execution"]["script_timeout_seconds"])
         lim = self.current_limits()
         hard = self.time_left() - self.reserve
         if lim is None:

@@ -23,7 +23,7 @@ def examples(split, data=Path("data")):
                 if split == "test"
                 else f"{path.relative_to(data).as_posix()}:{i}"
             )
-            yield key, x, None if split == "test" else f["class"].int64_list.value[0]
+            yield key, x, f["class"].int64_list.value[0] if split == "train" else None
 
 
 def predict(w, data, output):

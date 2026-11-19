@@ -245,7 +245,7 @@ def apply_retention(ctx: RunContext, top: list[Node]) -> None:
     with ctx.tree.lock:
         evaluated = [n for n in ctx.tree.nodes if not n.is_root and n.evaluated]
     for n in evaluated:
-        if n.id in keep or not n.has_artifacts:
+        if n.id in keep or n.id in ctx.flags.get("artifact_leases", ()) or not n.has_artifacts:
             continue
         md = _model_dir(ctx, n)
         if md.exists():
@@ -256,7 +256,7 @@ def apply_retention(ctx: RunContext, top: list[Node]) -> None:
 def after_assessment_files(ctx: RunContext, n: Node) -> None:
     """Run-directory housekeeping right after a node is assessed."""
     out = ctx.executor.run_dir(n.id) / "out"
-    if n.is_failed:
+    if n.is_failed and n.id != ctx.flags.get("repairable_id"):
         shutil.rmtree(out, ignore_errors=True)
         n.has_artifacts = False
         return
@@ -298,7 +298,8 @@ def update_rankings(ctx: RunContext, n: Node | None) -> tuple[bool, bool]:
             from .publication import incumbent
             import time
             started=time.monotonic()
-            incumbent(ctx, best)
+            if not ctx.flags.get("formal"):
+                incumbent(ctx, best)
             if ctx.control is not None and ctx.control.name=="adaptive":
                 ctx.control.publish_seconds.append(time.monotonic()-started)
             write_best(ctx, best)

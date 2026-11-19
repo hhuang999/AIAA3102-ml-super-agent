@@ -180,6 +180,7 @@ class Executor:
         self._kill_all = threading.Event()
         self._intervals = []
         self._running_slots = {}
+        self.isolation = None
 
     # ------------------------------------------------------------------ run dirs
     def run_dir(self, node_id: str) -> Path:
@@ -192,7 +193,7 @@ class Executor:
             with open(d / "solution.py", "w", encoding="utf-8", newline="") as fh:
                 fh.write(code)
         link = d / "data"
-        if not link.exists() and not link.is_symlink():
+        if self.isolation is None and not link.exists() and not link.is_symlink():
             os.symlink(self.prepared_dir.resolve(), link)
         (d / "work").mkdir(exist_ok=True)
         (d / "out").mkdir(exist_ok=True)
@@ -213,6 +214,8 @@ class Executor:
     # ------------------------------------------------------------------ execution
     def acquire_slot(self, abort: threading.Event | None = None, deadline: float | None = None) -> int | None:
         while True:
+            if self._kill_all.is_set() or (abort is not None and abort.is_set()):
+                return None
             if deadline is not None and time.monotonic() >= deadline:
                 return None
             try:
@@ -250,13 +253,16 @@ class Executor:
         trial_env=dict(trial_env or {})
         trial_env["PYTHONPATH"]=os.pathsep.join(filter(None,[str(Path(__file__).resolve().parents[1]),os.environ.get("PYTHONPATH")]))
         trial_env["SUPERAGENT_TRAIN_UNTIL"]=str(deadline-float(trial_env.get("SUPERAGENT_DELIVERY_SECONDS",0)))
-        slot = self.acquire_slot(abort,deadline)
+        slot = self.acquire_slot(abort, None if self.isolation is not None else deadline)
         if slot is None:
             return ExecResult("[superagent] Run cancelled before start.\n", 0.0, "RuntimeError",
                               "run cancelled before start", False, None, timeout)
         with self._lock:
             self._running_slots[node_id]=(slot,time.monotonic())
         try:
+            if self.isolation is not None:
+                deadline = time.monotonic() + timeout
+                trial_env["SUPERAGENT_TRAIN_UNTIL"] = str(deadline - float(trial_env.get("SUPERAGENT_DELIVERY_SECONDS", 0)))
             prefix = ""
             smoke: str | None = None
             smoke_secs = 0.0
@@ -299,6 +305,22 @@ class Executor:
             self.release_slot(slot)
             shutil.rmtree(run_dir / "work", ignore_errors=True)
 
+    def verify_bundle(self, node_id, spec, timeout, abort):
+        from .artifacts import verify
+        from .utils import atomic_write_json
+
+        run_dir = self.run_dir(node_id)
+        slot = self.acquire_slot(abort)
+        if slot is None:
+            return {"passed": False, "error": "cancelled", "seconds": 0}
+        try:
+            receipt = verify(self, run_dir, slot, time.monotonic() + timeout, abort,
+                             spec.inference_inputs, spec.probability, spec=spec)
+            atomic_write_json(run_dir / "artifact_verification.json", receipt)
+            return receipt
+        finally:
+            self.release_slot(slot)
+
     @staticmethod
     def _reset_outputs(run_dir: Path) -> None:
         for name in ("work", "out"):
@@ -312,8 +334,12 @@ class Executor:
         env = self._env(slot)
         if extra_env:
             env.update(extra_env)
+        args = argv if argv is not None else ["solution.py"]
+        command = [sys.executable, *args]
+        if self.isolation is not None:
+            command, env = self.isolation.command(run_dir, args, env, inference=argv is not None)
         proc = subprocess.Popen(
-            [sys.executable, *(argv if argv is not None else ["solution.py"])],
+            command,
             cwd=str(run_dir),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

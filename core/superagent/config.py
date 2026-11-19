@@ -145,6 +145,7 @@ def build_config(
 ) -> dict[str, Any]:
     """Return the effective configuration. Raises :class:`ConfigError` on any problem."""
     cfg = load_defaults()
+    user = {}
     if user_config_path is not None:
         p = Path(user_config_path)
         if not p.is_file():
@@ -169,6 +170,22 @@ def build_config(
         if path is None:
             raise ConfigError(f"unknown option '{name}'")
         set_path(cfg, path, value)
+    runner = cfg["verification"]["runner"]
+    if runner not in ("legacy", "bubblewrap") or cfg["verification"]["timeout_seconds"] <= 0:
+        raise ConfigError("verification requires legacy/bubblewrap and a positive timeout_seconds")
+    if runner == "bubblewrap":
+        if (
+            (cli_overrides or {}).get("time_limit_secs") is not None
+            or "time_limit_seconds" in user.get("run", {})
+            or "time_allocation" in user.get("control", {})
+            or "cost_cap" in user.get("control", {})
+            or "time_allocation" in user
+        ):
+            raise ConfigError("single-model runs use run.max_steps and external stop signals; remove task deadlines, time_allocation and cost caps")
+        cfg["ensemble"]["enabled"] = False
+        cfg["operators"]["synthesis"]["enabled"] = False
+        cfg["final"]["allow_ensemble"] = False
+        cfg["final"]["enabled"] = True
     if cfg["experience"]["planning"] not in ("single","two_stage","evidence") or not -1<=cfg["experience"]["min_similarity"]<=1:
         raise ConfigError("invalid experience planning mode or cosine threshold")
     if cfg["review"]["mode"] not in ("always","risk"):

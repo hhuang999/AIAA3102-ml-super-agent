@@ -193,7 +193,7 @@ def _classification_diagnostic(ctx: RunContext, node: Node, output: Path, info: 
         f"The majority-label validation baseline is {majority / len(truth):.6f}.\n"
     )
     info["validation_class_coverage"] = {"predicted": len(counts), "declared": len(spec.classes),
-                                         "dominant_count": largest, "total": len(new)}
+                                         "dominant_count": largest, "total": len(new), "truth_classes": len(set(truth))}
     best = ctx.tree.best
     if best:
         old = labels(ctx.executor.run_dir(best.id) / "out")
@@ -213,12 +213,14 @@ def assess(ctx: RunContext, node: Node, res: ExecResult) -> dict[str, object]:
         else:
             try:
                 node.score = ctx.task_spec.grade(output)
-                truth = ctx.task_spec.truth.rename_axis(ctx.task_spec.columns[0])
-                if not ctx.task_spec.probability:
-                    truth.rename(ctx.task_spec.columns[1]).to_csv(output / "val_labels.csv")
-                else:
+                if not ctx.flags.get("formal"):
+                    truth = ctx.task_spec.truth.rename_axis(ctx.task_spec.columns[0])
                     import pandas as pd
-                    pd.get_dummies(truth).reindex(columns=ctx.task_spec.classes, fill_value=0).astype(int).to_csv(output / "val_labels.csv")
+
+                    if not ctx.task_spec.probability:
+                        truth.rename(ctx.task_spec.columns[1]).to_csv(output / "val_labels.csv")
+                    else:
+                        pd.get_dummies(truth).reindex(columns=ctx.task_spec.classes, fill_value=0).astype(int).to_csv(output / "val_labels.csv")
                 node.val_files_ok = True
                 node.predictions_ok = True
                 node.score_source = "task_contract"
@@ -230,11 +232,19 @@ def assess(ctx: RunContext, node: Node, res: ExecResult) -> dict[str, object]:
                 _fail(node, "task_contract")
                 node.summary = str(exc)
             else:
-                if ctx.task_spec.metric == "accuracy":
+                if ctx.flags.get("formal") or ctx.task_spec.metric == "accuracy":
                     try:
                         _classification_diagnostic(ctx, node, output, info)
                     except (OSError, ValueError) as exc:
                         info["comparison_unavailable"] = str(exc)
+        if ctx.flags.get("formal"):
+            from .utils import atomic_write_json
+
+            atomic_write_json(ctx.executor.run_dir(node.id) / "score.json", {
+                "schema_version": 1, "split_id": ctx.task_spec.signature,
+                "metric": ctx.task_spec.metric, "score": node.score, "score_verified": node.ok,
+                "diagnostics": info, "error": node.summary if node.is_failed else None,
+            })
         return _finish(ctx, node, info)
     reader = read_results(ctx, node, res)
     return apply_assessment(

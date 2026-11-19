@@ -107,6 +107,9 @@ class SearchController:
 
     # ------------------------------------------------------------------ public
     def run(self) -> None:
+        if self.ctx.flags.get("formal"):
+            self._run_formal()
+            return
         ctx = self.ctx
         parallel = int(ctx.cfg["resources"]["parallel"])
         for i in range(parallel):
@@ -117,6 +120,20 @@ class SearchController:
         self._main_loop()
 
     # ------------------------------------------------------------------ startup
+    def _run_formal(self):
+        from . import single_model
+        from .utils import new_id
+
+        ctx = self.ctx
+        supplied = ctx.task_dir / "baseline.py"
+        if supplied.is_file() and not ctx.stop_event.is_set():
+            node = self.ops._new_node(new_id(), "draft", ctx.tree.root, "Supplied baseline", supplied.read_text(encoding="utf-8"))
+            info = single_model.evaluate(ctx, node, self._run)
+            single_model.finish(ctx, node, info)
+        ctx.stop_reason = "interrupted" if ctx.stop_event.is_set() else (
+            "max_steps" if supplied.is_file() and ctx.cfg["run"]["max_steps"] == 1 else "no_candidate"
+        )
+
     def _startup(self) -> None:
         """Write the initial drafts and hand each one to the workers as soon as it is ready."""
         ctx = self.ctx
@@ -697,9 +714,10 @@ class SearchController:
                 raise Discarded()
             env.update(SUPERAGENT_RESUME_DIR=str(previous),SUPERAGENT_DELIVERY_SECONDS=str(max(record["delivery_seconds"], (node.parent.checkpoint or {}).get("delivery_seconds",0))))
             smoke=None
-        res = ctx.executor.run(node.id, node.code, limit, abort=ctx.hard_event if ctx.stop_reason == "interrupted" else None,
+        formal = ctx.flags.get("formal")
+        res = ctx.executor.run(node.id, node.code, limit, abort=ctx.stop_event if formal else ctx.hard_event if ctx.stop_reason == "interrupted" else None,
                                smoke_timeout=smoke,trial_env=env,
-                               inference_inputs=ctx.task_spec.inference_inputs if ctx.task_spec else None,
+                               inference_inputs=ctx.task_spec.inference_inputs if ctx.task_spec and not formal else None,
                                probability=ctx.task_spec.probability if ctx.task_spec else False)
         if not res.error_type:
             node.checkpoint, checkpoint_error = self._read_checkpoint(node, sig)

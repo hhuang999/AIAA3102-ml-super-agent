@@ -64,6 +64,8 @@ def package_files(root, deadline=None):
 
 def same_predictions(original, replay, probability):
     for name in ("predictions.csv", "val_predictions.csv"):
+        if any((folder / name).is_symlink() or not (folder / name).is_file() for folder in (original, replay)):
+            return False
         a = pd.read_csv(original / name, dtype=str, keep_default_na=False)
         b = pd.read_csv(replay / name, dtype=str, keep_default_na=False)
         if (
@@ -91,16 +93,18 @@ def same_predictions(original, replay, probability):
     return True
 
 
-def verify(executor, run_dir, slot, deadline, abort, inputs, probability):
+def verify(executor, run_dir, slot, deadline, abort, inputs, probability, *, spec=None):
     started = time.monotonic()
     receipt = {"passed": False}
     package = run_dir / "out/model"
     try:
-        if not inputs:
+        isolated = getattr(executor, "isolation", None) is not None
+        if not inputs and not isolated:
             raise ValueError(
                 "task.yaml must declare inference_inputs without training data"
             )
         inventory, weights = package_files(package, deadline)
+        receipt["package_sha256"] = inventory
         with tempfile.TemporaryDirectory(prefix="inference-", dir=run_dir) as temp:
             fresh = Path(temp)
             shutil.copyfile(run_dir / "solution.py", fresh / "solution.py")
@@ -118,7 +122,7 @@ def verify(executor, run_dir, slot, deadline, abort, inputs, probability):
             data, output = fresh / "data", fresh / "out"
             data.mkdir()
             output.mkdir()
-            for name in inputs:
+            for name in (() if isolated else inputs):
                 target = data / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 source = executor.prepared_dir / name
@@ -138,11 +142,11 @@ def verify(executor, run_dir, slot, deadline, abort, inputs, probability):
                 "verify_inference.py",
                 "--predict-only",
                 "--model-dir",
-                str(fresh / "model"),
+                "model" if isolated else str(fresh / "model"),
                 "--data-dir",
-                str(data),
+                "data" if isolated else str(data),
                 "--output-dir",
-                str(output),
+                "out" if isolated else str(output),
             ]
             left = deadline - time.monotonic()
             if left <= 0:
@@ -160,6 +164,10 @@ def verify(executor, run_dir, slot, deadline, abort, inputs, probability):
                     "reloaded model predictions differ from training outputs"
                 )
             receipt["reloaded_predictions_match"] = True
+            if spec is not None:
+                receipt["score"] = spec.grade(output)
+                if not np.isclose(receipt["score"], spec.grade(run_dir / "out"), atol=1e-7, rtol=1e-6):
+                    raise ValueError("reloaded predictions do not reproduce the independent score")
             for name in weights:
                 (fresh / "model" / name).write_bytes(
                     b"invalid evaluator-only weight payload"
@@ -184,6 +192,10 @@ def verify(executor, run_dir, slot, deadline, abort, inputs, probability):
                 corrupt_weights_rejected=True,
                 code_sha256=digest(run_dir / "solution.py"),
                 package_sha256=inventory,
+                predictions_sha256={
+                    name: digest(run_dir / "out" / name)
+                    for name in ("val_predictions.csv", "predictions.csv")
+                },
             )
     except (OSError, ValueError, KeyError, TypeError) as exc:
         receipt["error"] = str(exc)

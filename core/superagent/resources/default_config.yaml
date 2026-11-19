@@ -26,6 +26,10 @@ execution:
   smoke_run: true                  # Run every script first with SUPERAGENT_SMOKE=1 on a tiny subset; skip the full run if it fails.
   smoke_timeout_seconds: 180       # Time limit of the smoke run (a smoke run that times out does not stop the full run).
 
+verification:
+  runner: legacy
+  timeout_seconds: 300
+
 llm:
   base_url: "https://api.deepseek.com"   # OpenAI-compatible endpoint.
   api_key_env: "DEEPSEEK_API_KEY"  # Name of the environment variable (or .env entry) holding the API key.

@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import platform
 import random
 import signal
 import sys
@@ -30,7 +31,7 @@ from .errors import InvalidInputError, LLMUnavailableError, StructuredOutputErro
 from .executor import Executor
 from .experience import ExperienceStore, make_embedder
 from .llm import Field
-from .llm.gateway import ASSESSMENT_ROLES, LLMGateway, OpenAITransport, abort_decision
+from .llm.gateway import ASSESSMENT_ROLES, FatalAPIError, LLMGateway, OpenAITransport, abort_decision
 from .profiler import SAMPLE_NAME, profile
 from .prompts import builders
 from .prompts.blocks import TASK_ALIGNMENT_RULES
@@ -157,6 +158,7 @@ def run_task(
                    "num_cpus": num_cpus, "parallel": parallel, "keep_artifacts_top_k": keep_artifacts_top_k,
                    "pretrained_mode": pretrained_mode}
             cfg = build_config(config, cli_overrides=cli)
+            formal = cfg["verification"]["runner"] == "bubblewrap"
             mask = cuda_mask()
             if mask is not None and cfg["resources"]["num_gpus"] > len(mask):
                 log.warning("limiting resources.num_gpus to the %d device(s) in CUDA_VISIBLE_DEVICES", len(mask))
@@ -164,7 +166,7 @@ def run_task(
             task = check_task_dir(task_dir)
             key_env = str(cfg["llm"]["api_key_env"])
             api_key = os.environ.get(key_env, "")
-            if not api_key:
+            if not api_key and not formal:
                 raise InvalidInputError(f"environment variable {key_env} is not set (it can also be put in a .env file)")
             if int(cfg["resources"]["num_cpus"]) < int(cfg["resources"]["parallel"]):
                 raise InvalidInputError("resources.num_cpus must be at least resources.parallel")
@@ -187,6 +189,8 @@ def run_task(
             reserve=min(reserve,.1*float(cfg["run"]["time_limit_seconds"]))
 
         def should_abort(role: str) -> bool:
+            if formal:
+                return intr.stop_event.is_set()
             if ctx is not None and role not in ASSESSMENT_ROLES and ctx.generation_window_expired():
                 return True
             return abort_decision(role, deadline - time.monotonic(), ctx.reserve if ctx is not None else reserve, intr.interrupted, intr.hard_event.is_set())
@@ -198,7 +202,11 @@ def run_task(
             d.mkdir(parents=True, exist_ok=True)
             return d
 
-        tr = OpenAITransport(cfg["llm"]["base_url"], api_key, float(cfg["llm"]["request_timeout_seconds"]))
+        if api_key:
+            tr = OpenAITransport(cfg["llm"]["base_url"], api_key, float(cfg["llm"]["request_timeout_seconds"]))
+        else:
+            def tr(_request):
+                raise FatalAPIError(f"missing API credential {key_env}")
         gateway = LLMGateway(cfg["llm"], paths.llm_calls, tr, should_abort=should_abort, prompt_log_dir=prompt_dir)
 
         cap=cfg["control"]["cost_cap"]
@@ -206,9 +214,20 @@ def run_task(
             gateway.ledger.limit=cap["limit"]/cap["rate_to_cap_currency"]
         raw_desc = (task / "description.md").read_text(encoding="utf-8", errors="replace")
         spec = load_spec(task, paths.prepared)
+        visible = paths.prepared
+        manifest = None
+        if formal:
+            if spec is None:
+                raise InvalidInputError("single-model runs require task.yaml v1 and declared validation truth")
+            from .inputs import prepare_inputs
+
+            manifest = prepare_inputs(task, paths.prepared, spec, out / "input_views")
+            visible = out / "input_views/training"
         task_desc = raw_desc + "\n" + spec.prompt if spec else _clean_description(gateway, raw_desc)
+        if manifest:
+            task_desc += "\nThe sandbox supplies this input manifest in data/input_manifest.json:\n" + str(manifest.payload())
         if spec is not None:
-            if not spec.inference_inputs:
+            if not spec.inference_inputs and not formal:
                 raise InvalidInputError("task.yaml must declare inference_inputs for independent artifact verification")
             if higher_is_better is not None and higher_is_better != spec.maximize:
                 raise InvalidInputError("CLI metric direction contradicts task.yaml")
@@ -221,7 +240,7 @@ def run_task(
             hib, source = _judge_direction(gateway, task_desc), "llm"
         direction = Direction(hib)
 
-        prof = profile(paths.prepared, cfg["profiler"])
+        prof = profile(visible, cfg["profiler"])
         sample = paths.prepared / SAMPLE_NAME
         sample_path = sample if sample.exists() and spec is None else None
         if sample_path is None and spec is None:
@@ -252,6 +271,25 @@ def run_task(
             ctx.stop_reason = "interrupted"
         ctx.task_spec = spec
         from .llm.ledger import fingerprint
+        if formal:
+            from importlib.metadata import PackageNotFoundError, version
+
+            from .inputs import build_task_facts
+            from .isolation import Bubblewrap
+            from .utils import new_id
+
+            versions = {}
+            for package in ("superagent", "numpy", "pandas", "scikit-learn", "Pillow", "tfrecord", "torch", "transformers"):
+                try:
+                    versions[package] = version(package)
+                except PackageNotFoundError:
+                    continue
+            facts = build_task_facts(spec, manifest, {"modalities": prof.modalities, "dependencies": versions}, new_id())
+            ctx.flags.update(formal=True, input_manifest=manifest, task_facts=facts,
+                runtime_environment={"schema_version": 1, "python": platform.python_version(), "packages": versions},
+                publish_lock=threading.Lock(), artifact_leases=set())
+            atomic_write_json(paths.logs / "task_facts.json", facts)
+            executor.isolation = Bubblewrap(visible, out / "input_views/inference", task / "data")
         # The prepared dataset is stable for the lifetime of this run; promotions never cross runs.
         ctx.flags["trial_environment"]=fingerprint([str(out),spec.signature if spec else raw_desc,
             mode,[(e["id"],e.get("example"),e.get("weight_hashes")) for e in cat.entries],cfg["run"]["seed"]])
@@ -319,7 +357,12 @@ def _finalize(ctx: RunContext) -> dict[str, Any]:
         ens_block = {"available": False, "primary_size": None, "strategy": None, "members": [], "error": str(exc)}
     final_block: dict[str, Any] | None = None
     try:
-        if ctx.cfg["final"]["enabled"] and ctx.tree.best is not None:
+        if ctx.flags.get("formal"):
+            final_block = latest(ctx.paths.root)
+            receipt = ctx.paths.logs / "publication.json"
+            if final_block and (not receipt.exists() or latest_receipt_id(receipt) != final_block["version_id"]):
+                atomic_write_json(receipt, {**final_block, "recovered": True})
+        elif ctx.cfg["final"]["enabled"] and ctx.tree.best is not None:
             final_block = _write_final(ctx)
     except Exception as exc:  # noqa: BLE001
         log.error("could not write final/: %s", exc)
@@ -351,6 +394,12 @@ def _finalize(ctx: RunContext) -> dict[str, Any]:
     log.info("finished: status=%s stop_reason=%s best=%s", status, ctx.stop_reason,
              ctx.tree.best.score if ctx.tree.best else None)
     return payload
+
+
+def latest_receipt_id(path):
+    import json
+
+    return json.loads(path.read_text(encoding="utf-8")).get("version_id")
 
 
 def _write_final(ctx: RunContext) -> dict[str, Any]:
