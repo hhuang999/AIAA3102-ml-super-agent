@@ -53,6 +53,15 @@ llm:
     input_price_per_million: 2.0
     output_price_per_million: 8.0
   request_timeout_seconds: 1200
+  max_in_flight: 0                 # 0 inherits resources.parallel for isolated runs.
+  request_limits:
+    connect_seconds: 10.0
+    pool_seconds: 30.0
+    read_idle_seconds: 60.0
+    model_idle_seconds: 180.0
+    short_attempt_seconds: 120.0
+    plan_review_attempt_seconds: 300.0
+    code_attempt_seconds: 900.0
   stream: true
   operation_extra_sends: 2
   role_policy:

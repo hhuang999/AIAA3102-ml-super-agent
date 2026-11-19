@@ -160,8 +160,18 @@ class Operators:
             if use:
                 node=self._new_node(node_id,"draft",root,"Execute the supplied task baseline.",baseline.read_text(encoding="utf-8"))
                 return GenOutcome(node,"draft",{"codegen":"supplied_baseline"})
-        summary = self._summary(root)
-        reqs = builders.draft_requirements(self._rules(), self._env(), ctx.catalog_text)
+        ledger = ctx.gateway.ledger if ctx.flags.get("formal") else None
+        saved = ledger.get(node_id, "draft_inputs", "v1") if ledger else None
+        if saved:
+            summary, reqs = saved
+        else:
+            summary = self._summary(root)
+            reqs = builders.draft_requirements(self._rules(), self._env(), ctx.catalog_text)
+            hypothesis = getattr(ctx._local, "selected_hypothesis", None)
+            if hypothesis:
+                reqs += "\nThe assigned model hypothesis is: " + hypothesis
+            if ledger:
+                ledger.put(node_id, "draft_inputs", "v1", [summary, reqs])
         details: dict[str, Any] = {"planning": "none"}
         result: Extracted | None = None
         last = ""

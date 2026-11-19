@@ -20,7 +20,21 @@ TRIGGERED_OPERATORS = ("retrospect", "borrow", "synthesis")
 
 
 def _llm_usage(ctx: RunContext) -> dict[str, Any]:
-    rows = read_jsonl(ctx.paths.llm_calls)
+    formal = ctx.flags.get("formal")
+    if formal:
+        ledger = ctx.gateway.ledger
+        with ledger.db() as db:
+            raw = db.execute("SELECT role, status, usage FROM attempts ORDER BY started").fetchall()
+        import json
+
+        rows = []
+        for role, status, payload in raw:
+            usage = json.loads(payload) if payload else {}
+            rows.append({"agent": role, "model": usage.get("model") or ctx.cfg["llm"]["generation"]["model"],
+                         "ok": status == "received", "prompt_tokens": usage.get("input_tokens"),
+                         "completion_tokens": usage.get("output_tokens"), "reasoning_tokens": usage.get("reasoning_tokens")})
+    else:
+        rows = read_jsonl(ctx.paths.llm_calls)
     late = {r["attempt_id"]: r for r in read_jsonl(ctx.paths.llm_calls.with_name("late_usage.jsonl"))}
 
     def empty() -> dict[str, Any]:
@@ -41,9 +55,12 @@ def _llm_usage(ctx: RunContext) -> dict[str, Any]:
             bucket["completion_tokens"] += usage.get("completion_tokens") or 0
             bucket["reasoning_tokens"] += usage.get("reasoning_tokens") or 0
             bucket["cost"] += usage.get("cost") or 0.0
-            bucket["unknown_usage"] += usage.get("cost") is None
+            bucket["unknown_usage"] += (usage.get("prompt_tokens") is None or usage.get("completion_tokens") is None
+                                        if formal else usage.get("cost") is None)
     for bucket in [total, *by_agent.values(), *by_model.values()]:
-        bucket["cost"] = round(bucket["cost"], 6)
+        bucket["cost"] = None if formal else round(bucket["cost"], 6)
+    if formal:
+        total["accounting"] = "adapter"
     total["by_agent"] = dict(by_agent)
     total["by_model"] = dict(by_model)
     return total
@@ -343,10 +360,11 @@ def render_markdown(s: dict[str, Any]) -> str:
     for r, n in s["failures"]["by_reason"].items():
         lines.append(f"- {r}: {n}")
     llm = res["llm"]
+    amount = "price using Adapter cost" if llm.get("accounting") == "adapter" else f"known cost {llm['cost']} {llm['currency']}"
     lines += ["", "## Resource usage", "",
               f"- LLM HTTP attempts: {llm['calls']} ({llm['failed_calls']} failed); prompt tokens {llm['prompt_tokens']}, "
               f"completion tokens {llm['completion_tokens']} (reasoning {llm['reasoning_tokens']}); "
-              f"known cost {llm['cost']} {llm['currency']}; attempts without usage {llm['unknown_usage']}",
+              f"{amount}; attempts without usage {llm['unknown_usage']}",
               f"- Embedding: {res['embedding']['calls']} calls, {res['embedding']['tokens']} tokens, cost {res['embedding']['cost']} {res['embedding']['currency']}",
               f"- Script runs: {res['exec']['num_runs']} ({res['exec']['num_timeouts']} timeouts), total {res['exec']['total_script_seconds']} s",
               "", "| agent | calls | prompt tokens | completion tokens | cost |", "|---|---|---|---|---|"]

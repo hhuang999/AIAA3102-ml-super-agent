@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import asdict
-from .ledger import Ledger, DeferredCall, PermanentCall, fingerprint
+from .ledger import CancelledCall, Ledger, DeferredCall, PermanentCall, fingerprint
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +61,8 @@ class TransportResponse:
     ttft_s: float | None = None
     first_content_s: float | None = None
     first_reasoning_s: float | None = None
+    transport_complete: bool = True
+    uncached_tokens: int | None = None
 
 
 class TransientAPIError(Exception):
@@ -241,6 +243,8 @@ class LLMGateway:
         should_abort: Callable[[str], bool] | None = None,
         prompt_log_dir: Callable[[str], Path | None] | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        *,
+        run_id: str | None = None,
     ) -> None:
         self.cfg = llm_cfg
         self.calls_log_path = Path(calls_log_path) if calls_log_path else None
@@ -248,7 +252,8 @@ class LLMGateway:
         self.should_abort = should_abort or (lambda role: False)
         self.prompt_log_dir = prompt_log_dir
         self._sleep = sleep
-        self.ledger = Ledger(self.calls_log_path.with_name("operations.sqlite"),int(llm_cfg.get("operation_extra_sends",2))) if self.calls_log_path else None
+        self.ledger = Ledger(self.calls_log_path.with_name("operations.sqlite"),int(llm_cfg.get("operation_extra_sends",2)), run_id=run_id) if self.calls_log_path else None
+        self.formal = run_id is not None
         self.cooldown_until = 0.0
         self.endpoint_failure = None
         self._lock = threading.Lock()
@@ -352,6 +357,8 @@ class LLMGateway:
             "json_mode": json_mode,
         }
         request["stream"] = bool(self.cfg.get("stream",False))
+        if self.formal:
+            return self._formal_request_once(request, node_id, call_id, attempt_counter)
         max_retries = min(1,int(self.cfg.get("api_max_retries", 1)))
         delay = float(self.cfg.get("api_retry_delay_seconds", 3))
         api_failures = 0
@@ -462,6 +469,75 @@ class LLMGateway:
             resp._log_row = resp_row  # type: ignore[attr-defined]
             return resp
 
+    def _formal_request_once(self, request, operation, call_id, counter):
+        role = request["role"]
+        ledger = self.ledger
+        assert ledger is not None
+        signature = fingerprint(request)
+        prompt_bytes = sum(len(m["content"].encode()) for m in request["messages"])
+        # UTF-8 byte length is an upper bound for these text prompts.
+        if prompt_bytes + request["max_tokens"] + 256 > 1_048_576:
+            raise PermanentCall("required_context_too_large")
+        network_retried = False
+        while True:
+            if self.should_abort(role):
+                raise CancelledCall("cancelled")
+            if self.endpoint_failure:
+                raise PermanentCall(self.endpoint_failure)
+            if time.monotonic() < self.cooldown_until:
+                raise DeferredCall("endpoint_cooldown", self.cooldown_until)
+            attempt = None
+
+            def begin():
+                nonlocal attempt
+                if self.should_abort(role):
+                    raise CancelledCall("cancelled")
+                if self.endpoint_failure:
+                    raise PermanentCall(self.endpoint_failure)
+                if time.monotonic() < self.cooldown_until:
+                    raise DeferredCall("endpoint_cooldown", self.cooldown_until)
+                attempt = ledger.begin_request(operation, role, call_id, signature, request)
+                counter[0] += 1
+                return attempt
+
+            try:
+                resp = self.transport.invoke(request, lambda: self.should_abort(role), begin, ledger.receive_usage, ledger.finish_request)
+            except FatalAPIError as exc:
+                if getattr(exc, "status", None) in (401, 402, 403) or str(exc) == "missing_api_credential":
+                    self.endpoint_failure = str(exc)
+                raise PermanentCall(str(exc)) from exc
+            except TransientAPIError as exc:
+                status = getattr(exc, "status", None)
+                if status in (429, 524):
+                    delay = getattr(exc, "retry_after", None) or (120 if status == 524 else 3)
+                    with self._lock:
+                        self.cooldown_until = max(self.cooldown_until, time.monotonic() + delay)
+                    raise DeferredCall(f"http_{status}", self.cooldown_until) from exc
+                if network_retried or not self.cfg.get("api_max_retries"):
+                    raise PermanentCall(str(exc)) from exc
+                network_retried = True
+                deadline = time.monotonic() + self.cfg["api_retry_delay_seconds"]
+                while time.monotonic() < deadline:
+                    if self.should_abort(role):
+                        raise CancelledCall("cancelled") from exc
+                    self._sleep(min(.1, deadline - time.monotonic()))
+                continue
+            if not resp.transport_complete:
+                resp.finish_reason = "model_idle_timeout" if resp.finish_reason == "model_idle_timeout" else "no_transport_terminator"
+            if resp.finish_reason in ("content_filter", "tool_calls"):
+                raise PermanentCall(resp.finish_reason)
+            resp._log_row = {
+                "ts": now_iso(), "attempt_id": attempt, "operation_id": operation, "call_id": call_id,
+                "agent": role, "node_id": operation, "model": request["model"],
+                "thinking": request["thinking"], "reasoning_effort": request["reasoning_effort"],
+                "max_tokens": request["max_tokens"], "prompt_bytes": prompt_bytes,
+                "prompt_tokens": resp.prompt_tokens, "completion_tokens": resp.completion_tokens,
+                "finish_reason": resp.finish_reason, "provider_id": resp.provider_id,
+                "returned_model": resp.returned_model, "cost": None,
+            }
+            self._log_prompt(operation, role, counter[0], request["messages"])
+            return resp
+
     # ------------------------------------------------------------------ public API
     def output_limit(self, role, expanded=False):
         group = self._group(role)
@@ -501,7 +577,7 @@ class LLMGateway:
                 all_reasoning = resp.completion_tokens and resp.reasoning_tokens == resp.completion_tokens
                 if all_reasoning:
                     lower = "off" if role in ("patch_coder","repair_coder") else self._lower_effort(role, effort)
-            error = None if ok else ("empty reply; retrying with reasoning effort " + lower if lower else "empty reply")
+            error = None if ok else ("empty_response; retrying with reasoning effort " + lower if lower else "empty_response")
             self._log({**row, "ok": ok and not truncated, "has_content": ok, "error": error or (resp.finish_reason if truncated else None)})
             if lower is None:
                 if effort is not None and ledger:
@@ -559,7 +635,12 @@ class LLMGateway:
             elif not resp.content.strip():
                 errors.append("blank_stop: return a nonempty JSON object")
             else:
-                parsed = parse_json_object(resp.content)
+                if self.formal:
+                    from .jsonparse import parse_complete_object
+
+                    parsed = parse_complete_object(resp.content)
+                else:
+                    parsed = parse_json_object(resp.content)
                 if parsed is None:
                     errors.append("the reply did not contain a parseable JSON object")
                 else:

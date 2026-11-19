@@ -18,7 +18,7 @@ from pathlib import Path
 from .analysis import analyze, plot_timeline
 from .batch import run_plan
 from .common.core_runner import core_command, run_core
-from .common.costs import load_prices, recompute
+from .common.costs import load_prices, read_usage
 from .common.task_dir import build_task_dir, check_isolation
 from .mlebench.grader import grade_all
 
@@ -68,6 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("cost", help="recompute the model cost of a run with a price table")
     c.add_argument("--core-output", required=True, type=Path)
     c.add_argument("--prices", required=True, type=Path)
+    c.add_argument("--after-cursor")
+    c.add_argument("--process-exited", action="store_true")
     z = sub.add_parser("analyze", help="summarise a run (operators, selection modes, failures, usage, grades)")
     z.add_argument("--core-output", required=True, type=Path)
     z.add_argument("--grades", type=Path)
@@ -103,7 +105,12 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(res["summary"], indent=2))
         return 0
     if a.cmd == "cost":
-        print(json.dumps(recompute(a.core_output, load_prices(a.prices)), indent=2))
+        try:
+            result = read_usage(a.core_output, load_prices(a.prices), a.after_cursor, a.process_exited)
+        except ValueError as exc:
+            print(f"superagent_adapter: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, indent=2))
         return 0
     if a.cmd == "analyze":
         res = analyze(a.core_output, a.grades, a.catalog)

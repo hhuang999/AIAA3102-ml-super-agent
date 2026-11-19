@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import asdict, dataclass, field
 from .llm.ledger import fingerprint
@@ -59,6 +60,22 @@ def extract_code(reply: str, truncated: bool = False) -> Extracted | None:
     return Extracted(plan=plan, code=code)
 
 
+def solution_error(code):
+    """Static entry-point check for generated scripts. Smoke verifies actual behavior."""
+    if error := python_syntax_error(code):
+        return error
+    tree = ast.parse(code)
+    strings = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    required = {
+        "__main__", "--predict-only", "--model-dir", "--data-dir", "--output-dir",
+        "val_predictions.csv", "predictions.csv", "inference.json",
+    }
+    missing = required - strings
+    if missing:
+        return "code_incomplete: missing " + ", ".join(sorted(missing))
+    return None
+
+
 class CodeGenerator:
     def __init__(self, gateway: LLMGateway, extract_attempts: int, patch_attempts: int) -> None:
         self.gw = gateway
@@ -66,20 +83,28 @@ class CodeGenerator:
         self.patch_attempts = int(patch_attempts)
 
     def full_script(self, role: str, system: str, user: str, node_id: str) -> FullScriptResult:
+        ledger = getattr(self.gw, "ledger", None) if getattr(self.gw, "formal", False) else None
+        signature = fingerprint([system, user])
+        stage = f"{role}.code_retry"
+        saved = ledger.get(node_id, stage, signature) if ledger else None
         last = ""
-        note = ""
-        seen = set()
-        expanded = False
-        for i in range(self.extract_attempts):
+        note = saved["note"] if saved else ""
+        seen = {tuple(item) for item in saved["seen"]} if saved else set()
+        expanded = saved["expanded"] if saved else False
+        for i in range(len(seen), self.extract_attempts):
             prompt = user if not note else note + "\n\n" + user
             key = (prompt, self.gw.output_limit(role, expanded))
             if key in seen:
                 break
-            seen.add(key)
             res = self.gw.text(role, system, prompt, node_id=node_id, expanded=expanded)
+            seen.add(key)
             last = res.content
             ex = extract_code(res.content, res.truncated)
-            if ex is not None:
+            malformed_fence = getattr(self.gw, "formal", False) and res.content.count("```") % 2
+            error = None
+            if ex and getattr(self.gw, "formal", False) and role in ("script_coder", "draft_integrator"):
+                error = solution_error(ex.code)
+            if ex is not None and not error and not malformed_fence:
                 return FullScriptResult(ex, last, i + 1)
             if res.finish_reason == "length" and not res.content.strip():
                 break
@@ -87,6 +112,10 @@ class CodeGenerator:
             note = ("# Note\nYour previous reply could not be used: " +
                     ("it was incomplete; return the complete script with all required behavior." if res.truncated else
                      "it must contain a short overview followed by one ```python block holding a complete script that parses as valid Python."))
+            if error:
+                note += "\n" + error
+            if ledger:
+                ledger.put(node_id, stage, signature, {"note": note, "seen": sorted(seen), "expanded": expanded})
         return FullScriptResult(None, last, len(seen))
 
     def staged(

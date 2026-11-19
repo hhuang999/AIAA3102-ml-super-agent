@@ -123,7 +123,7 @@ def evaluate(ctx, node, run_candidate):
     return info
 
 
-def finish(ctx, node, info):
+def finish(ctx, node, info, record=None):
     if info.get("deliverable"):
         try:
             info["publication"] = "published" if publish_if_better(ctx, node) else "retained_incumbent"
@@ -146,8 +146,12 @@ def finish(ctx, node, info):
             node.failure_reasons.append("artifact_contract")
             node.summary = (node.artifact_verification or {}).get("error", "artifact unavailable")
         after_assessment_files(ctx, node)
+        if record is not None:
+            record()
         with ctx.tree.lock:
             ctx.tree.append(node)
+            if node.ok:
+                ctx.tree.register_ok(node)
         update_rankings(ctx, node if info.get("deliverable") else None)
         write_search_tree(ctx)
         write_status(ctx)

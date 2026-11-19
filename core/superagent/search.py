@@ -121,18 +121,9 @@ class SearchController:
 
     # ------------------------------------------------------------------ startup
     def _run_formal(self):
-        from . import single_model
-        from .utils import new_id
+        from .operations import Operations
 
-        ctx = self.ctx
-        supplied = ctx.task_dir / "baseline.py"
-        if supplied.is_file() and not ctx.stop_event.is_set():
-            node = self.ops._new_node(new_id(), "draft", ctx.tree.root, "Supplied baseline", supplied.read_text(encoding="utf-8"))
-            info = single_model.evaluate(ctx, node, self._run)
-            single_model.finish(ctx, node, info)
-        ctx.stop_reason = "interrupted" if ctx.stop_event.is_set() else (
-            "max_steps" if supplied.is_file() and ctx.cfg["run"]["max_steps"] == 1 else "no_candidate"
-        )
+        Operations(self).run()
 
     def _startup(self) -> None:
         """Write the initial drafts and hand each one to the workers as soon as it is ready."""

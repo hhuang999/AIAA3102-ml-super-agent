@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from .codegen import python_syntax_error
+from .codegen import python_syntax_error, solution_error
 from .context import RunContext
 from .errors import StructuredOutputError
 from .llm import Field
@@ -60,7 +60,7 @@ def review(ctx: RunContext, node: Node) -> ReviewOutcome:
         candidate, applied = apply_patch(node.code, patch)
         if not (applied > 0 and applied == parsed.n_start == parsed.n_end and candidate != node.code):
             return obj, ["a revise verdict requires complete patch blocks with unique matching SEARCH lines"]
-        error = python_syntax_error(candidate)
+        error = solution_error(candidate) if ctx.flags.get("formal") else python_syntax_error(candidate)
         if error:
             return obj, [f"the revised script does not compile: {error}"]
         revised = candidate

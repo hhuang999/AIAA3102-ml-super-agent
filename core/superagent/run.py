@@ -31,14 +31,14 @@ from .errors import InvalidInputError, LLMUnavailableError, StructuredOutputErro
 from .executor import Executor
 from .experience import ExperienceStore, make_embedder
 from .llm import Field
-from .llm.gateway import ASSESSMENT_ROLES, FatalAPIError, LLMGateway, OpenAITransport, abort_decision
+from .llm.gateway import ASSESSMENT_ROLES, LLMGateway, OpenAITransport, abort_decision
 from .profiler import SAMPLE_NAME, profile
 from .prompts import builders
 from .prompts.blocks import TASK_ALIGNMENT_RULES
 from .search import SearchController
 from .task_io import check_output_dir, check_task_dir, prepare_data
 from .tree import Direction, SearchTree
-from .utils import atomic_write_json, atomic_write_text, load_env_file, now_iso
+from .utils import atomic_write_json, atomic_write_text, load_env_file, new_id, now_iso
 
 log = logging.getLogger("superagent")
 
@@ -151,6 +151,7 @@ def run_task(
     handlers = _setup_logging(paths.run_log)
     intr = _interrupt or _Interrupt()
     ctx: RunContext | None = None
+    async_transport = None
     try:
         try:
             load_env_file(Path.cwd() / ENV_FILE_NAME)
@@ -202,15 +203,19 @@ def run_task(
             d.mkdir(parents=True, exist_ok=True)
             return d
 
-        if api_key:
-            tr = OpenAITransport(cfg["llm"]["base_url"], api_key, float(cfg["llm"]["request_timeout_seconds"]))
+        run_id = new_id() if formal else None
+        if formal:
+            from .llm.async_transport import AsyncDeepSeekTransport
+
+            slots = cfg["llm"]["max_in_flight"] or cfg["resources"]["parallel"]
+            async_transport = AsyncDeepSeekTransport(cfg["llm"]["base_url"], api_key, cfg["llm"]["request_limits"], slots)
+            tr = async_transport
         else:
-            def tr(_request):
-                raise FatalAPIError(f"missing API credential {key_env}")
-        gateway = LLMGateway(cfg["llm"], paths.llm_calls, tr, should_abort=should_abort, prompt_log_dir=prompt_dir)
+            tr = OpenAITransport(cfg["llm"]["base_url"], api_key, float(cfg["llm"]["request_timeout_seconds"]))
+        gateway = LLMGateway(cfg["llm"], paths.llm_calls, tr, should_abort=should_abort, prompt_log_dir=prompt_dir, run_id=run_id)
 
         cap=cfg["control"]["cost_cap"]
-        if cap["mode"]=="enforce" and cap["limit"]>0:
+        if not formal and cap["mode"]=="enforce" and cap["limit"]>0:
             gateway.ledger.limit=cap["limit"]/cap["rate_to_cap_currency"]
         raw_desc = (task / "description.md").read_text(encoding="utf-8", errors="replace")
         spec = load_spec(task, paths.prepared)
@@ -276,7 +281,6 @@ def run_task(
 
             from .inputs import build_task_facts
             from .isolation import Bubblewrap
-            from .utils import new_id
 
             versions = {}
             for package in ("superagent", "numpy", "pandas", "scikit-learn", "Pillow", "tfrecord", "torch", "transformers"):
@@ -284,7 +288,7 @@ def run_task(
                     versions[package] = version(package)
                 except PackageNotFoundError:
                     continue
-            facts = build_task_facts(spec, manifest, {"modalities": prof.modalities, "dependencies": versions}, new_id())
+            facts = build_task_facts(spec, manifest, {"modalities": prof.modalities, "dependencies": versions}, run_id)
             ctx.flags.update(formal=True, input_manifest=manifest, task_facts=facts,
                 runtime_environment={"schema_version": 1, "python": platform.python_version(), "packages": versions},
                 publish_lock=threading.Lock(), artifact_leases=set())
@@ -296,7 +300,8 @@ def run_task(
         intr.ctx = ctx
         ctx.gpu_info = detect_gpus()
         ctx.control = make_controller(ctx)
-        ctx.control.start(build_state(ctx))
+        if not formal:
+            ctx.control.start(build_state(ctx))
         log.info("controller: %s", ctx.control.name)
         atomic_write_text(paths.logs / "task_description_clean.md", task_desc)
         write_search_tree(ctx)
@@ -323,6 +328,8 @@ def run_task(
         except Exception:  # noqa: BLE001
             return {"status": "failed", "error": str(exc)}
     finally:
+        if async_transport is not None:
+            async_transport.close()
         if ctx is not None and ctx.experience is not None:
             ctx.experience.close()
         for h in handlers:
@@ -376,7 +383,7 @@ def _finalize(ctx: RunContext) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         log.error("could not write the run summary: %s", exc)
     ledger=getattr(ctx.gateway,"ledger",None)
-    if ledger:
+    if ledger and not ctx.flags.get("formal"):
         accounting = ledger.summary()
         accounting.update(ctx.executor.utilization(ctx.process_start, time.monotonic()))
         with ctx.tree.lock:

@@ -125,6 +125,8 @@ class RunContext:
         return float(self.cfg["run"]["finalize_reserve_seconds"])
 
     def time_left(self) -> float:
+        if self.flags.get("formal"):
+            return float("inf")
         return self.deadline - time.monotonic()
 
     def elapsed(self) -> float:
@@ -220,6 +222,13 @@ class RunContext:
             self.step_timings.append(timing)
 
     def resources(self) -> Resources:
+        if self.flags.get("formal"):
+            return Resources(
+                time_left_secs=0, steps_left=max(0, self.cfg["run"]["max_steps"] - self.flags.get("claimed_steps", 0)),
+                run_limit_secs=self.current_run_limit(), cpus_per_run=self.executor.cores_per_slot,
+                num_gpus=self.executor.num_gpus, mode=self.mode, smoke_seconds=self.smoke_seconds(),
+                external_stop=True,
+            )
         lim = self.current_limits()
         if lim is None:
             return Resources(

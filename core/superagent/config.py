@@ -174,6 +174,9 @@ def build_config(
     if runner not in ("legacy", "bubblewrap") or cfg["verification"]["timeout_seconds"] <= 0:
         raise ConfigError("verification requires legacy/bubblewrap and a positive timeout_seconds")
     if runner == "bubblewrap":
+        import math
+        from urllib.parse import urlsplit
+
         if (
             (cli_overrides or {}).get("time_limit_secs") is not None
             or "time_limit_seconds" in user.get("run", {})
@@ -186,6 +189,20 @@ def build_config(
         cfg["operators"]["synthesis"]["enabled"] = False
         cfg["final"]["allow_ensemble"] = False
         cfg["final"]["enabled"] = True
+        cfg["review"]["enabled"] = True
+        cfg["review"]["mode"] = "always"
+        url = urlsplit(cfg["llm"]["base_url"])
+        if cfg["llm"]["base_url"].rstrip("/") != "https://api.deepseek.com" and (
+            url.scheme != "http" or url.hostname not in ("127.0.0.1", "::1", "localhost") or url.username or url.password
+        ):
+            raise ConfigError("single-model llm.base_url requires official DeepSeek HTTPS or a local fixture")
+        if any(cfg["llm"][group]["model"] != "deepseek-flash" for group in ("generation", "judgement")):
+            raise ConfigError("single-model runs use deepseek-flash")
+        limits = cfg["llm"]["request_limits"]
+        if any(not math.isfinite(n) or n <= 0 for n in limits.values()) or cfg["llm"]["max_in_flight"] < 0:
+            raise ConfigError("llm request limits must be finite and positive; max_in_flight must be nonnegative")
+        if min(limits[key] for key in ("short_attempt_seconds", "plan_review_attempt_seconds", "code_attempt_seconds")) < limits["connect_seconds"]:
+            raise ConfigError("llm absolute attempt limits must cover connect_seconds")
     if cfg["experience"]["planning"] not in ("single","two_stage","evidence") or not -1<=cfg["experience"]["min_similarity"]<=1:
         raise ConfigError("invalid experience planning mode or cosine threshold")
     if cfg["review"]["mode"] not in ("always","risk"):

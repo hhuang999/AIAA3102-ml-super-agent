@@ -14,7 +14,10 @@ Missing usage remains unknown; totals below are known subtotals.
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections import defaultdict
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -93,4 +96,162 @@ def recompute(core_out: Path, prices: Mapping[str, Any]) -> dict[str, Any]:
                              "total": round(recorded + emb_recorded, 6)},
         "unknown_usage_attempts":unknown, "cost_complete": not unknown and not missing,
         "models_without_price": sorted(missing),
+    }
+
+
+def _utc(value):
+    result = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return result.replace(tzinfo=timezone.utc) if result.tzinfo is None else result.astimezone(timezone.utc)
+
+
+def _price_rows(prices, model, started_at):
+    aliases = prices.get("aliases", {})
+    model = aliases.get(model, model)
+    source = prices.get("models", {}).get(model)
+    if source is None:
+        return None
+    rows = source if isinstance(source, list) else [source]
+    started = _utc(started_at)
+    eligible = []
+    for row in rows:
+        begins = row.get("effective_from", prices.get("effective_from"))
+        ends = row.get("effective_until", prices.get("effective_until"))
+        if (begins is None or _utc(begins) <= started) and (ends is None or started < _utc(ends)):
+            eligible.append((_utc(begins) if begins is not None else datetime.min.replace(tzinfo=timezone.utc), row))
+    return max(eligible, key=lambda item: item[0])[1] if eligible else None
+
+
+def _decimal(row, field):
+    value = row.get(field)
+    if value is None:
+        return None
+    try:
+        price = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ValueError(f"invalid price {field}") from exc
+    if not price.is_finite() or price < 0:
+        raise ValueError(f"invalid price {field}")
+    return price
+
+
+def _attempt_cost(prices, model, at, usage):
+    price = _price_rows(prices, model, at)
+    if price is None:
+        return None, Decimal(0), False
+    currency = price.get("currency", prices.get("currency"))
+    if not currency:
+        raise ValueError(f"price for {model} requires a currency")
+    total, hit, miss, output = (usage.get(k) for k in (
+        "input_tokens", "cached_input_tokens", "uncached_input_tokens", "output_tokens",
+    ))
+    if any(n is not None and (type(n) is not int or n < 0) for n in (total, hit, miss, output)):
+        raise ValueError("invalid token count in usage receipt")
+    if total is not None and (hit is not None and hit > total or miss is not None and miss > total
+                              or hit is not None and miss is not None and hit + miss != total):
+        hit = miss = None
+    elif total is not None and (hit is None) != (miss is None):
+        hit, miss = (total - miss, miss) if hit is None else (hit, total - hit)
+    inp = _decimal(price, "input_per_million")
+    cache = _decimal(price, "cached_input_per_million") if "cached_input_per_million" in price else inp
+    out = _decimal(price, "output_per_million")
+    if total is not None and inp is not None and (inp == cache or total == 0):
+        amount, input_complete = total * inp, True
+    else:
+        amount = (hit * cache if hit is not None and cache is not None else Decimal(0))
+        amount += miss * inp if miss is not None and inp is not None else Decimal(0)
+        input_complete = None not in (hit, miss, inp, cache)
+    if output is not None and out is not None:
+        amount += output * out
+    return currency, amount / Decimal(1_000_000), input_complete and output is not None and out is not None
+
+
+def _receipts(core_output):
+    db = Path(core_output) / "logs/operations.sqlite"
+    if not db.is_file():
+        return None
+    conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        conn.execute("BEGIN")
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='view' AND name='api_usage_events_v1'").fetchone() is None:
+            return None
+        identities = conn.execute("SELECT run_id FROM api_usage_run_v1").fetchall()
+        if len(identities) != 1:
+            raise ValueError("usage database requires exactly one run ID")
+        rows = conn.execute("SELECT run_id, receipt_seq, event_type, event_at, attempt_id, payload_json "
+                            "FROM api_usage_events_v1 ORDER BY receipt_seq").fetchall()
+        return identities[0][0], rows
+    finally:
+        conn.close()
+
+
+def read_usage(core_output, prices, cursor=None, process_exited=False):
+    """Read one transaction of charge receipts without importing Core."""
+    snapshot = _receipts(core_output)
+    if snapshot is None:
+        if cursor is not None:
+            raise ValueError("legacy usage reports have no cursor")
+        return {"schema_version": 1, "mode": "legacy", "cursor": None, **recompute(core_output, prices)}
+    run_id, rows = snapshot
+    after = 0
+    if cursor is not None:
+        if isinstance(cursor, str):
+            run, sep, raw_seq = cursor.rpartition(":")
+            if not sep or not raw_seq.isdecimal():
+                raise ValueError("expected usage cursor run_id:receipt_seq")
+            cursor = {"run_id": run, "receipt_seq": int(raw_seq)}
+        after = cursor.get("receipt_seq")
+        if cursor.get("run_id") != run_id or type(after) is not int or not 0 <= after <= len(rows):
+            raise ValueError("usage cursor refers to a different run or an unknown receipt sequence")
+    attempts = {}
+    changed = {}
+    for expected, (run, seq, kind, at, attempt, payload) in enumerate(rows, 1):
+        if run != run_id or seq != expected:
+            raise ValueError(f"usage receipt gap at sequence {expected}")
+        data = json.loads(payload)
+        if not isinstance(data, dict):
+            raise ValueError(f"invalid usage payload at sequence {seq}")
+        if kind == "attempt_started":
+            if attempt in attempts:
+                raise ValueError(f"duplicate attempt start at sequence {seq}")
+            attempts[attempt] = {"started": at, "model": data["model"]}
+        elif kind in ("attempt_finished", "usage_received") and attempt in attempts:
+            attempts[attempt][kind] = data
+        else:
+            raise ValueError(f"invalid receipt {kind} at sequence {seq}")
+        if seq > after:
+            changed[attempt] = None
+    status_path = Path(core_output) / "status.json"
+    if status_path.is_file():
+        state = json.loads(status_path.read_text(encoding="utf8")).get("status")
+        process_exited |= state in {"success", "failed", "invalid_input", "no_valid_solution"}
+    counts = {"total": len(attempts), "in_flight": 0, "unknown": 0, "settled": 0, "not_sent": 0}
+    usage = {"input_tokens_known": 0, "output_tokens_known": 0, "reasoning_tokens_known": 0}
+    totals = defaultdict(Decimal)
+    models_without_price = set()
+    for row in attempts.values():
+        finished = row.get("attempt_finished", {})
+        receipt = row.get("usage_received", {})
+        if finished.get("not_sent"):
+            counts["not_sent"] += 1
+            continue
+        model = receipt.get("model") or row["model"]
+        for field in usage:
+            usage[field] += receipt.get(field.removesuffix("_known")) or 0
+        currency, partial, fully_priced = _attempt_cost(prices, model, row["started"], receipt)
+        if currency:
+            totals[currency] += partial
+        else:
+            models_without_price.add(model)
+        counts["in_flight" if not finished and not process_exited else "settled" if fully_priced else "unknown"] += 1
+    complete = not (counts["unknown"] or counts["in_flight"])
+    currency = prices.get("currency")
+    subtotals = {cur: float(round(value, 10)) for cur, value in sorted(totals.items())}
+    single = len(totals) <= 1
+    return {
+        "schema_version": 1, "mode": "receipts", "cursor": {"run_id": run_id, "receipt_seq": len(rows)},
+        "price_table": {"id": prices.get("id") or "legacy-price-table", "currency": next(iter(totals), currency) if single else None},
+        "attempts": counts, "usage": usage,
+        "cost": {"known_subtotal": next(iter(subtotals.values()), 0.0) if single else None,
+                 "by_currency": subtotals, "complete": complete},
+        "changed_attempt_ids": list(changed), "models_without_price": sorted(models_without_price),
     }

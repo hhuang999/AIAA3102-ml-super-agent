@@ -1,6 +1,6 @@
-# Price table for `superagent_adapter.cli cost`. Replace the values with the official standard prices that
-# apply to the evaluation (per 1M tokens, without cache discounts). Output tokens include reasoning tokens.
+# Course example. Use a separate table with the provider's effective rates for invoice reconciliation.
+id: course-v1
 currency: CNY
 models:
-  deepseek-flash: {input_per_million: 2.0, output_per_million: 8.0}
+  deepseek-flash: {input_per_million: 2.0, cached_input_per_million: 0.04, output_per_million: 8.0}
 # Local Qwen usage is reported as tokens and compute seconds.

@@ -34,6 +34,7 @@ class Resources:
     gpu_memory_gb: float | None = None
     gpu_sharing: int = 1
     smoke_seconds: float = 0.0
+    external_stop: bool = False
 
 
 def _fmt_dur(secs: float) -> str:
@@ -59,6 +60,9 @@ def _gpu_line(res: Resources) -> str:
 
 
 def _time_lines(res: Resources) -> str:
+    if res.external_stop:
+        return (f"- Candidate slots left: {res.steps_left}. The caller controls when the task stops.\n"
+                f"- Finish this script within {_fmt_dur(res.run_limit_secs)} including training and predictions.")
     if not res.budget_text:
         return (f"- Total time left for the whole search: {_fmt_dur(res.time_left_secs)}. Steps left: {res.steps_left}.\n"
                 f"- Time limit for this script: {_fmt_dur(res.run_limit_secs)} ({int(res.run_limit_secs)} seconds). "

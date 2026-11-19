@@ -370,6 +370,8 @@ def _finish(ctx: RunContext, node: Node, info: dict[str, object]) -> dict[str, o
     node.finished_at = now_iso()
     if node.failed is None:
         node.failed = False
+    if ctx.flags.get("formal"):
+        return info
     if node.ok:
         ctx.tree.register_ok(node)
     if ctx.experience is not None:
