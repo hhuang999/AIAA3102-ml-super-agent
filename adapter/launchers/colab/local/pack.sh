@@ -5,7 +5,9 @@
 set -euo pipefail
 CORE=$1; ADAPTER=$2; TASK=$3; OUT=$4
 mkdir -p "$OUT"
-EXCL=(--exclude=.git --exclude=.venv --exclude=__pycache__ --exclude=.pytest_cache --exclude='*.egg-info' --exclude=.env)
+EXCL=(--exclude=.git --exclude=.venv --exclude=__pycache__ --exclude=.pytest_cache
+      --exclude=.ruff_cache --exclude='*.egg-info' --exclude=build --exclude=dist
+      --exclude=tests --exclude=.env)
 tar czf "$OUT/core.tar.gz" "${EXCL[@]}" -C "$CORE" .
 tar czf "$OUT/adapter.tar.gz" "${EXCL[@]}" -C "$ADAPTER" .
 tar czf "$OUT/task.tar.gz" -C "$(dirname "$TASK")" --transform "s,^$(basename "$TASK"),task," "$(basename "$TASK")"

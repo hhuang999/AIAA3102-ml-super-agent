@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import math
 import threading
 import time
 from email.utils import parsedate_to_datetime
@@ -36,7 +37,8 @@ def _usage(raw, provider_id, model):
 
 def retry_after(value):
     try:
-        return max(0.0, float(value))
+        delay = float(value)
+        return max(0.0, delay) if math.isfinite(delay) else 0.0
     except (ValueError, TypeError):
         try:
             return max(0.0, parsedate_to_datetime(value).timestamp() - time.time())

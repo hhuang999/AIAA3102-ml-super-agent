@@ -186,6 +186,8 @@ def _receipts(core_output):
 
 def read_usage(core_output, prices, cursor=None, process_exited=False):
     """Read one transaction of charge receipts without importing Core."""
+    if not Path(core_output).is_dir():
+        raise ValueError(f"Core output directory not found: {core_output}")
     snapshot = _receipts(core_output)
     if snapshot is None:
         if cursor is not None:

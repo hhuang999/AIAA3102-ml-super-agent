@@ -1,6 +1,6 @@
 """Transactional attempt accounting and resumable artifacts, scoped to one run."""
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import hashlib
 import json
 import sqlite3
@@ -39,6 +39,9 @@ class Ledger:
         self.run_id = run_id
         self.limit = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if run_id:
+            with closing(sqlite3.connect(self.path, timeout=10)) as conn:
+                conn.execute("PRAGMA journal_mode=WAL").fetchone()
         with self.db() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS ops(id TEXT PRIMARY KEY, signature TEXT, status TEXT, available REAL);
@@ -48,6 +51,7 @@ class Ledger:
             """)
             if run_id:
                 db.executescript("""
+                    BEGIN IMMEDIATE;
                     CREATE TABLE IF NOT EXISTS run_identity(run_id TEXT PRIMARY KEY);
                     CREATE TABLE IF NOT EXISTS receipts(
                       receipt_seq INTEGER PRIMARY KEY, event_type TEXT NOT NULL, event_at TEXT NOT NULL,
