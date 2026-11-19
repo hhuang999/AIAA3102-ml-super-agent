@@ -118,6 +118,8 @@ def checkpoint(directory, signature, *, verify=True):
     meta = Path(directory) / "checkpoint.json"
     if not meta.exists():
         return None
+    if meta.is_symlink() or not meta.is_file():
+        raise ValueError("checkpoint metadata must be a regular file")
     record = json.loads(meta.read_text(encoding="utf-8"))
     if not isinstance(record, dict) or not isinstance(record.get("signature"), str):
         raise ValueError("invalid checkpoint metadata")
@@ -146,7 +148,7 @@ def checkpoint(directory, signature, *, verify=True):
     ):
         raise ValueError("invalid checkpoint hash")
     path = meta.parent / name
-    if not path.is_file() or (verify and digest(path) != name):
+    if path.is_symlink() or not path.is_file() or (verify and digest(path) != name):
         raise ValueError("checkpoint payload missing or changed")
     return record
 

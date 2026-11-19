@@ -5,9 +5,12 @@ from __future__ import annotations
 import logging
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import asdict, dataclass
 
 from . import single_model
+from .control.adaptive import Proposal, Snapshot, rank_proposals
+from .experience import Record, decision_context
 from .errors import LLMUnavailableError, StructuredOutputError
 from .llm.ledger import CancelledCall, DeferredCall, fingerprint
 from .review import apply_policy, review
@@ -16,21 +19,6 @@ from .utils import append_jsonl, new_id, now_iso
 
 log = logging.getLogger("superagent")
 DRAFT_ROLES = ("draft_writer.data_prep", "draft_writer.model_def", "draft_writer.train_eval", "draft_integrator")
-
-
-@dataclass(frozen=True)
-class Proposal:
-    proposal_id: str
-    parent_id: str
-    action: str
-    hypothesis: str
-    source: str
-    local: bool
-    as_of_seq: int
-    evidence_ids: tuple[str, ...] = ()
-    target: str | None = None
-    expected_seconds: float = 0.0
-    expected_sends: int = 0
 
 
 @dataclass
@@ -43,6 +31,7 @@ class Dispatch:
     stage: str = "claimed"
     resume_at: float = 0.0
     started: float = 0.0
+    evidence: tuple[dict, ...] = ()
 
 
 class Operations:
@@ -54,17 +43,16 @@ class Operations:
         self.deferred = {}
         self.facts = []
         self.ctx.flags["active_parent_leases"] = set()
+        self.parent_claims = {}
         self.ctx.flags["baseline_claimed"] = True  # The supplied path is picked explicitly by this scheduler.
         self.ctx.tree.search_start = time.monotonic()
 
-    def _drafts(self):
+    def _drafts(self, snapshot):
         ctx = self.ctx
         parent = ctx.tree.root.id
-        sequence = len(self.facts)
+        sequence = snapshot.as_of_seq
         if (ctx.task_dir / "baseline.py").is_file():
             yield Proposal("supplied", parent, "draft", "Supplied baseline", "supplied", True, sequence)
-        if ctx.gateway.endpoint_failure:
-            return
         kinds = {
             "tabular": ("low-variance regularized baseline", "nonlinear tabular interactions"),
             "text": ("sparse word or character representation", "complementary text representation"),
@@ -75,11 +63,24 @@ class Operations:
         max_drafts = min(ctx.cfg["search"]["initial_drafts"], ctx.cfg["search"]["max_drafts"])
         position = 1 if (ctx.task_dir / "baseline.py").is_file() else 0
         for hypothesis in hypotheses[:max(0, max_drafts - position)]:
-            yield Proposal(f"draft-{position}", parent, "draft", hypothesis, "generated", False, sequence)
+            yield Proposal(f"draft-{position}", parent, "draft", hypothesis, "generated", False, sequence,
+                           expected_sends=len(self._roles_draft()))
             position += 1
 
-    def propose(self):
-        return [proposal for proposal in self._drafts() if proposal.proposal_id not in self.claimed]
+    def snapshot(self):
+        from .training import progress_available
+
+        ctx = self.ctx
+        with ctx.tree.lock:
+            resumable = frozenset(n.id for n in ctx.tree.nodes if n.checkpoint and n.checkpoint.get("can_continue")
+                                  and progress_available(n.checkpoint))
+            best = ctx.tree.best
+        return Snapshot(len(self.facts), tuple(self.facts), frozenset(self.claimed), ctx.flags.get("repairable_id"),
+                        best.score if best else None, not ctx.gateway.endpoint_failure, len(self.claimed), resumable)
+
+    def propose(self, snapshot=None):
+        snapshot = self.snapshot() if snapshot is None else snapshot
+        return rank_proposals(snapshot, self._drafts(snapshot), self.ctx.cfg, self.ctx.direction.higher_is_better)
 
     def _signature(self, proposal):
         ctx = self.ctx
@@ -108,7 +109,9 @@ class Operations:
                 del self.claimed[proposal.proposal_id]
             raise
         ctx.flags["claimed_steps"] = len(self.claimed)
+        dispatch.evidence = tuple(decision_context(self.facts, proposal, ctx.experience))
         if not ctx.tree.by_id[proposal.parent_id].is_root:
+            self.parent_claims[proposal.parent_id] = self.parent_claims.get(proposal.parent_id, 0) + 1
             ctx.flags["active_parent_leases"].add(proposal.parent_id)
             ctx.flags["artifact_leases"].add(proposal.parent_id)
         return dispatch
@@ -117,10 +120,13 @@ class Operations:
         if proposal.local:
             return ()
         if proposal.action == "draft":
-            return (*DRAFT_ROLES, "reviewer") if self.ctx.cfg["codegen"]["staged_drafting"] else ("script_coder", "reviewer")
-        if proposal.action == "repair":
+            return self._roles_draft()
+        if proposal.action == "repair" and proposal.target == "predict_only" and "predict_only" in self.ctx.tree.by_id[proposal.parent_id].code:
             return ("repair_coder", "reviewer")
         return ("planner.structured", "patch_coder", "reviewer")
+
+    def _roles_draft(self):
+        return (*DRAFT_ROLES, "reviewer") if self.ctx.cfg["codegen"]["staged_drafting"] else ("script_coder", "reviewer")
 
     def _state(self, dispatch, state, delay=0):
         dispatch.stage = state
@@ -137,7 +143,19 @@ class Operations:
                 path = ctx.task_dir / "baseline.py"
                 return self.controller.ops._new_node(dispatch.id, "draft", parent, proposal.hypothesis,
                                                      path.read_text(encoding="utf8"))
-            return self.controller.ops.draft(parent).node
+            if proposal.action == "promote":
+                node = self.controller.ops._new_node(dispatch.id, "promote", parent, parent.plan, parent.code)
+                node.trial_id = parent.trial_id or parent.id
+                node.rung = parent.rung + 1
+                return node
+            if proposal.action == "draft":
+                return self.controller.ops.draft(parent).node
+
+            def planned(plan):
+                self.ledger.put(dispatch.id, "accepted_plan", dispatch.signature, plan)
+                self._state(dispatch, "planned")
+
+            return self.controller.ops.experiment_candidate(dispatch, parent, dispatch.evidence, planned)
         finally:
             ctx._local.operation_id = None
             ctx._local.selected_hypothesis = None
@@ -155,12 +173,19 @@ class Operations:
         if node.is_failed:
             return node, {"failure_stage": "generated", "reason": node.summary}
         if not dispatch.proposal.local:
+            from .codegen import plan_coverage
+
             outcome = review(ctx, node)
             if not (outcome.verdict == "pass" or outcome.changed):
                 node.failed = True
                 node.summary = outcome.findings
                 node.failure_reasons.append("review_unresolved")
                 return node, {"failure_stage": "reviewed", "reason": outcome.findings}
+            if node.structured_plan and plan_coverage(node.structured_plan, node.parent.code, node.code):
+                node.failed = True
+                node.summary = "plan_incomplete: review removed a required change"
+                node.failure_reasons.append("plan_incomplete")
+                return node, {"failure_stage": "reviewed", "reason": node.summary}
         self._state(dispatch, "reviewed")
         if apply_policy(ctx, node):
             return node, {"failure_stage": "reviewed", "reason": node.summary}
@@ -172,8 +197,9 @@ class Operations:
             self._state(dispatch, "executed")
             return result
 
-        details = single_model.evaluate(ctx, node, execute)
-        self._state(dispatch, "verified" if details["deliverable"] else "assessed")
+        details = single_model.evaluate(ctx, node, execute, on_assessed=lambda: self._state(dispatch, "assessed"))
+        if details["deliverable"]:
+            self._state(dispatch, "verified")
         if not details["deliverable"]:
             details.update(
                 failure_stage="verified" if details["score_verified"] else "executed" if node.error_type else "assessed",
@@ -184,11 +210,20 @@ class Operations:
     def _record(self, dispatch, node, details, terminal):
         ctx = self.ctx
         parent = ctx.tree.by_id[dispatch.proposal.parent_id]
+        parent_fact = next((row for row in self.facts if row.get("node_id") == parent.id), None)
+        gain = (ctx.direction.gain(node.score, parent_fact["score"])
+                if parent_fact and parent_fact["score_verified"] and details.get("score_verified") else None)
+        if node:
+            node.parent_gain = gain
+        from .training import digest
+
+        path = ctx.executor.run_dir(node.id) / "solution.py" if node else None
+        source_hash = digest(path) if path and path.is_file() else fingerprint(node.code) if node and node.code else None
         data = {
             "schema_version": 1, "operation_id": dispatch.id, "proposal_id": dispatch.proposal.proposal_id,
             "node_id": node.id if node else None, "parent_id": parent.id, "action": dispatch.proposal.action,
             "method": dispatch.proposal.source, "hypothesis": dispatch.proposal.hypothesis,
-            "source_sha256": fingerprint(node.code) if node and node.code else None,
+            "source_sha256": source_hash, "target": dispatch.proposal.target, "branch_id": node.branch_id if node else parent.branch_id,
             "seed": ctx.cfg["run"]["seed"], "split_id": ctx.task_spec.signature, "metric": ctx.task_spec.metric,
             "status": terminal, "failed_stage": details.get("failure_stage"), "reason": details.get("reason"),
             "seconds": time.monotonic() - dispatch.started,
@@ -196,13 +231,22 @@ class Operations:
             "score": node.score if node else None, "score_verified": details.get("score_verified", False),
             "deliverable": details.get("deliverable", False), "trial_id": node.trial_id if node else None,
             "rung": node.rung if node else None, "checkpoint": node.checkpoint if node else None,
+            "trial_signature": (node.checkpoint or {}).get("signature") if node else None,
+            "gain": gain, "evidence_ids": [item["operation_id"] for item in dispatch.evidence],
             "verification": node.artifact_verification if node else None,
             "diagnostic": details.get("validation_class_coverage"),
             "structured_plan": node.structured_plan if node else None,
             "publication": details.get("publication"),
         }
         seq = self.ledger.record_experiment(dispatch.id, data, terminal)
-        self.facts.append({**data, "seq": seq})
+        self.facts.append(deepcopy({**data, "seq": seq}))
+        if ctx.experience is not None:
+            try:
+                ctx.experience.add(Record(dispatch.id, dispatch.proposal.action, dispatch.proposal.hypothesis,
+                    node.method_summary if node else "", (gain > 0) - (gain < 0) if gain is not None else 0,
+                    data["score"], parent_fact["score"] if parent_fact else None, data["exec_seconds"], data["reason"], now_iso()))
+            except OSError as exc:
+                log.warning("could not update derived experience index: %s", exc)
         return data, seq
 
     def _complete(self, dispatch, future):
@@ -210,7 +254,7 @@ class Operations:
         node = None
         try:
             node, details = future.result()
-            terminal = "completed" if details.get("deliverable") else "failed"
+            terminal = "completed" if details.get("deliverable") else "cancelled" if ctx.stop_event.is_set() else "failed"
         except DeferredCall as exc:
             if exc.resume_at is None:
                 raise
@@ -237,9 +281,19 @@ class Operations:
         else:
             single_model.finish(ctx, node, details, lambda: self._record(dispatch, node, details, terminal))
         parent_id = dispatch.proposal.parent_id
-        ctx.flags["active_parent_leases"].discard(parent_id)
-        if ctx.flags.get("repairable_id") != parent_id:
-            ctx.flags["artifact_leases"].discard(parent_id)
+        if dispatch.proposal.action == "repair" and ctx.flags.get("repairable_id") == parent_id:
+            ctx.flags.pop("repairable_id", None)
+        if parent_id in self.parent_claims:
+            self.parent_claims[parent_id] -= 1
+            if not self.parent_claims[parent_id]:
+                del self.parent_claims[parent_id]
+                ctx.flags["active_parent_leases"].discard(parent_id)
+                if ctx.flags.get("repairable_id") != parent_id:
+                    ctx.flags["artifact_leases"].discard(parent_id)
+        if dispatch.proposal.action == "repair":
+            from .bookkeeping import apply_retention
+
+            apply_retention(ctx, ctx.tree.top_list)
         append_jsonl(ctx.paths.decisions, {
             "schema_version": 1, "ts": now_iso(), "decision_id": dispatch.decision_id,
             "as_of_seq": dispatch.proposal.as_of_seq, "operation_id": dispatch.id,
@@ -263,7 +317,8 @@ class Operations:
                         del self.deferred[dispatch.id]
                         pending[pool.submit(self._work, dispatch)] = dispatch
                         api_jobs += 1
-                proposals = self.propose() if len(self.claimed) < ctx.cfg["run"]["max_steps"] else []
+                snapshot = self.snapshot()
+                proposals, ranked, rejected = self.propose(snapshot) if len(self.claimed) < ctx.cfg["run"]["max_steps"] else ([], [], [])
                 for proposal in proposals:
                     if proposal.local and local_jobs >= parallel or not proposal.local and api_jobs >= api_slots:
                         continue
@@ -272,6 +327,12 @@ class Operations:
                     dispatch = self.claim(proposal, proposal.as_of_seq)
                     if dispatch is None:
                         continue
+                    append_jsonl(ctx.paths.decisions, {
+                        "schema_version": 1, "ts": now_iso(), "decision_id": dispatch.decision_id,
+                        "as_of_seq": snapshot.as_of_seq, "operation_id": dispatch.id, "event": "selected",
+                        "selected": asdict(proposal), "ranked": ranked, "rejected": rejected,
+                        "evidence_sent": [item["operation_id"] for item in dispatch.evidence],
+                    })
                     pending[pool.submit(self._work, dispatch)] = dispatch
                     local_jobs += int(proposal.local)
                     api_jobs += int(not proposal.local)

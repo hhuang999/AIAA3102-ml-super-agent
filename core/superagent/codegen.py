@@ -76,6 +76,104 @@ def solution_error(code):
     return None
 
 
+def plan_coverage(plan, original, candidate):
+    from .planner import python_symbols
+
+    before = python_symbols(original)
+    after = python_symbols(candidate)
+    return [
+        change["id"]
+        for change in plan["changes"]
+        if (ast.dump(ast.parse(original)) == ast.dump(ast.parse(candidate))
+            if change["target"] == "whole_script"
+            else change["target"] not in after or ast.dump(before[change["target"]]) == ast.dump(after[change["target"]]))
+    ]
+
+
+_CHANGE = re.compile(r"^CHANGE\s+([A-Za-z0-9_-]+)\s*$", re.MULTILINE)
+
+
+def apply_planned_reply(code, plan, reply, applied=()):
+    """Apply complete, compile-valid blocks that actually edit their named symbol."""
+    from difflib import SequenceMatcher
+
+    from .planner import python_symbols
+
+    done = set(applied)
+    changes = {change["id"]: change for change in plan["changes"]}
+    tags = list(_CHANGE.finditer(reply))
+    notes = []
+    for index, tag in enumerate(tags):
+        ident = tag.group(1)
+        if ident not in changes or ident in done:
+            notes.append(f"unexpected or duplicate change ID {ident}")
+            continue
+        target = changes[ident]["target"]
+        symbol = python_symbols(code).get(target)
+        segment = reply[tag.end(): tags[index + 1].start() if index + 1 < len(tags) else len(reply)]
+        parsed = parse_patch(segment)
+        if not symbol or parsed.n_start != 1 or parsed.n_end != 1 or len(parsed.blocks) != 1:
+            notes.append(f"{ident}: needs one complete SEARCH/REPLACE at {target}")
+            continue
+        block = parsed.blocks[0]
+        if not block.search.strip():
+            notes.append(f"{ident}: SEARCH must locate existing code")
+            continue
+        result, matched = apply_block(code, block)
+        if not matched or python_syntax_error(result):
+            notes.append(f"{ident}: SEARCH must match uniquely and preserve valid Python")
+            continue
+        before, after = code.splitlines(), result.splitlines()
+        low = min([symbol.lineno, *(d.lineno for d in symbol.decorator_list)]) - 1
+        edits = [op for op in SequenceMatcher(None, before, after, autojunk=False).get_opcodes() if op[0] != "equal"]
+        revised = python_symbols(result).get(target)
+        if not edits or any(not low <= start <= end <= symbol.end_lineno for _, start, end, _, _ in edits) or (
+            revised is None or ast.dump(symbol) == ast.dump(revised)
+        ):
+            notes.append(f"{ident}: code diff must change only {target}")
+            continue
+        code = result
+        done.add(ident)
+    return code, sorted(done), notes
+
+
+def planned_patch(gateway, operation, signature, plan, code, rules, *, role="patch_coder"):
+    from .planner import python_symbols
+
+    ledger = gateway.ledger
+    saved = ledger.get(operation, "planned_patch", signature)
+    current, applied, notes = (saved["code"], saved["applied"], saved["notes"]) if saved else (code, [], [])
+    all_changes = plan["changes"]
+    tries = saved["tries"] if saved else 0
+    expanded = saved["expanded"] if saved else False
+    system = "Implement the approved plan with precise, anchor-based Python edits."
+    while tries < 2:
+        pending = [change for change in all_changes if change["id"] not in applied]
+        if not pending:
+            return current
+        symbols = python_symbols(current)
+        lines = current.splitlines()
+        excerpts = {
+            item["target"]: "\n".join(lines[symbols[item["target"]].lineno - 1:symbols[item["target"]].end_lineno])
+            for item in pending
+        }
+        user = (
+            f"{rules}\nPlan: {plan['hypothesis']}\nRemaining changes: {pending}\nPreserve: {plan['preserve']}\n"
+            "For each edit, write a line CHANGE followed by its exact ID, then one "
+            "<<<<<<< SEARCH / ======= / >>>>>>> REPLACE block. Copy a unique anchor verbatim.\n"
+            f"Prior validation: {notes}\nCurrent target source: {excerpts}"
+        )
+        response = gateway.text(role, system, user, node_id=operation, expanded=expanded)
+        current, applied, notes = apply_planned_reply(current, plan, response.content, applied)
+        if response.truncated:
+            notes.append("The previous response ended before transport or generation completed.")
+        expanded = expanded or response.body_limited
+        tries += 1
+        ledger.put(operation, "planned_patch", signature,
+                   {"code": current, "applied": applied, "notes": notes, "tries": tries, "expanded": expanded})
+    return current if not plan_coverage(plan, code, current) else None
+
+
 class CodeGenerator:
     def __init__(self, gateway: LLMGateway, extract_attempts: int, patch_attempts: int) -> None:
         self.gw = gateway

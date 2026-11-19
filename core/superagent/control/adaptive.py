@@ -4,6 +4,7 @@ import ast
 import hashlib
 from functools import lru_cache
 import math
+import statistics
 import time
 from dataclasses import dataclass
 
@@ -61,6 +62,161 @@ class Offer:
             estimated_fee=round(self.fee, 6),
             priority=round(self.value, 6),
         )
+
+
+@dataclass(frozen=True)
+class Proposal:
+    proposal_id: str
+    parent_id: str
+    action: str
+    hypothesis: str
+    source: str
+    local: bool
+    as_of_seq: int
+    evidence_ids: tuple[str, ...] = ()
+    target: str | None = None
+    expected_seconds: float = 0.0
+    expected_sends: int = 0
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    as_of_seq: int
+    facts: tuple[dict, ...]
+    tried: frozenset[str]
+    repairable: str | None
+    incumbent: float | None
+    api_available: bool
+    dispatched: int
+    resumable: frozenset[str]
+
+
+def rank_proposals(snapshot, drafts, config, maximize):
+    """Make deterministic decisions from committed observations and current leases."""
+    from dataclasses import replace
+
+    from ..llm.ledger import fingerprint
+
+    search = config["search"]
+    policy = config["control"]["adaptive"]
+    threshold = search["min_gain"]
+    direction = 1 if maximize else -1
+    facts = snapshot.facts
+    rejected = []
+    scored = []
+    children = {}
+    for row in facts:
+        children.setdefault(row["parent_id"], []).append(row)
+    parents = sorted(
+        (row for row in facts if row.get("score_verified")),
+        key=lambda row: (-direction * row["score"], row["operation_id"]),
+    )
+    strength = {row["node_id"]: 1 / (1 + index * .12) for index, row in enumerate(parents)}
+
+    def add(prop, reason, tier=2):
+        record = {"proposal_id": prop.proposal_id, "parent_id": prop.parent_id, "action": prop.action, "reason": reason}
+        if prop.proposal_id in snapshot.tried:
+            rejected.append({**record, "reason": "duplicate_or_already_tried"})
+            return
+        if not prop.local and not snapshot.api_available:
+            rejected.append({**record, "reason": "api_route_unavailable"})
+            return
+        samples = [r for r in facts if r["action"] == prop.action and r["method"] == prop.source
+                   and r.get("status") != "cancelled"][-20:]
+        complete = [r["seconds"] for r in samples if r.get("deliverable")]
+        timeouts = [r["seconds"] for r in samples if (r.get("reason") or "").startswith("timeout")]
+        seconds = prop.expected_seconds or float(policy["initial_script_seconds"]) + float(policy["initial_other_seconds"])
+        if complete:
+            seconds = statistics.median(complete)
+        if timeouts:
+            seconds = max(seconds, max(timeouts))
+        probability = (1 + len(complete)) / (2 + len(samples))
+        merit = .2 + strength.get(prop.parent_id, .5) + .4 / (1 + len(children.get(prop.parent_id, ())))
+        priority = merit * probability / max(seconds, 1)
+        prop = replace(prop, expected_seconds=seconds)
+        scored.append((tier, -priority, prop.expected_sends, prop.proposal_id, prop, {
+            **record, "tier": tier, "merit": merit, "completion_probability": probability,
+            "estimated_seconds": seconds, "estimated_sends": prop.expected_sends, "priority": priority,
+        }))
+
+    for draft in drafts:
+        add(draft, "supplied_baseline" if draft.source == "supplied" else "distinct_root_hypothesis",
+            -1 if draft.source == "supplied" else 2)
+
+    for row in facts:
+        parent = row.get("node_id")
+        if not parent or not row.get("source_sha256"):
+            continue
+        branch_children = children.get(parent, ())
+        source = "generated"
+
+        def propose(action, why, tier=2, *, target=None, extra=(), seconds=0):
+            key = fingerprint([parent, action, target, row.get("trial_id"), row.get("rung"), row["seed"]])[:24]
+            add(Proposal(key, parent, action, why, source, action == "promote", snapshot.as_of_seq,
+                         tuple(dict.fromkeys((row["operation_id"], *extra))), target, seconds,
+                         {"promote": 0, "repair": 2}.get(action, 3)), why, tier)
+
+        if not row["deliverable"]:
+            valuable = snapshot.incumbent is None or row.get("score") is not None and direction * (row["score"] - snapshot.incumbent) > 0
+            repairs = sum(r["action"] == "repair" for r in branch_children)
+            if row["action"] == "repair" and not row["score_verified"]:
+                continue
+            if repairs < search["max_repairs_per_node"] and valuable:
+                if row["score_verified"] and parent == snapshot.repairable:
+                    propose("repair", "repair isolated inference using the retained verified-score model", 0, target="predict_only")
+                elif not row["score_verified"] and snapshot.incumbent is None:
+                    propose("repair", "repair the observed training or scoring failure")
+            continue
+        if len(branch_children) >= search["max_refinements_per_node"]:
+            continue
+        trial = row.get("trial_id")
+        comparable = sorted(
+            (r for r in facts if trial and r.get("trial_id") == trial and r.get("score_verified")
+             and all(r.get(k) == row.get(k) for k in ("split_id", "metric", "source_sha256", "seed", "trial_signature"))
+             and progress_available(r.get("checkpoint"))),
+            key=lambda r: (r["rung"], r["seq"]),
+        )
+        levels = {r["rung"]: r for r in comparable}
+        past = [r for rung, r in sorted(levels.items()) if rung <= row["rung"]]
+        gain = None
+        if len(past) > 1 and past[-1]["checkpoint"]["progress"]["optimizer_steps"] > past[-2]["checkpoint"]["progress"]["optimizer_steps"]:
+            gain = direction * (past[-1]["score"] - past[-2]["score"])
+        cp = row.get("checkpoint") or {}
+        trials = [r for r in facts if trial and r.get("trial_id") == trial and r["action"] == "promote"]
+        newest = next(reversed(levels), row.get("rung")) == row.get("rung")
+        if parent in snapshot.resumable and newest and row["rung"] < policy["max_rung"]:
+            extra = tuple(r["operation_id"] for r in past[-2:])
+            seconds = cp["next_seconds"] + cp["delivery_seconds"] + 2
+            if gain is not None and gain > threshold:
+                propose("promote", "verified checkpoint and positive comparable training gain", 1, extra=extra, seconds=seconds)
+            elif gain is None and not trials:
+                propose("promote", "one probe of the next training rung", extra=extra, seconds=seconds)
+            else:
+                rejected.append({"parent_id": parent, "action": "promote", "reason": "no_positive_comparable_gain" if gain is not None else "probe_already_attempted"})
+        diagnostic = row.get("diagnostic") or {}
+        collapsed = diagnostic.get("total", 0) >= 20 and diagnostic.get("truth_classes", 0) > 1 and diagnostic.get("predicted") == 1
+        if (collapsed and gain is not None and gain <= threshold) or row.get("verified_feature_issue"):
+            why = ("test one representation, optimizer or input hypothesis after sustained class collapse"
+                   if collapsed else "test a representation that preserves the observed missing information")
+            propose("refine", why, 1, target="model_def", extra=tuple(r["operation_id"] for r in past[-2:]))
+        else:
+            propose("refine", "test a targeted single-model improvement", target="model_def")
+        peers = [r for r in facts if r.get("branch_id") == row.get("branch_id") and r.get("gain") is not None
+                 and r.get("status") == "completed"][-3:]
+        if len(peers) == 3 and all(r["gain"] <= threshold for r in peers):
+            propose("retrospect", "change direction after three comparable non-improvements",
+                    extra=tuple(r["operation_id"] for r in peers), target="model_def")
+            donor = next((r for r in parents if r.get("branch_id") != row.get("branch_id")
+                          and r["deliverable"] and direction * (r["score"] - row["score"]) > threshold), None)
+            if donor:
+                propose("borrow", "adapt a useful method observed on a different branch", 1,
+                        extra=(donor["operation_id"],), target="model_def")
+    scored.sort(key=lambda item: item[:4])
+    if scored and scored[0][0] > 0 and snapshot.dispatched > 0 and (snapshot.dispatched + 1) % policy["explore_every"] == 0:
+        root = next((i for i, offer in enumerate(scored) if offer[4].action == "draft"), None)
+        if root is not None:
+            scored.insert(0, scored.pop(root))
+    return [item[4] for item in scored], [item[5] for item in scored], rejected
 
 
 class AdaptiveController(Controller):

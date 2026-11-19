@@ -93,7 +93,7 @@ def _run_repaired_predictions(ctx, node):
         executor.release_slot(slot)
 
 
-def evaluate(ctx, node, run_candidate):
+def evaluate(ctx, node, run_candidate, *, on_assessed=None):
     from .executor import ExecResult
 
     reuse = node.kind == "repair" and _run_repaired_predictions(ctx, node)
@@ -109,6 +109,8 @@ def evaluate(ctx, node, run_candidate):
         except (OSError, ValueError) as exc:
             res.error_type, res.error_message = "OutputError", str(exc)
     info = assess(ctx, node, res)
+    if on_assessed is not None:
+        on_assessed()
     if node.ok:
         node.artifact_verification = ctx.executor.verify_bundle(
             node.id, ctx.task_spec, ctx.cfg["verification"]["timeout_seconds"], ctx.stop_event,

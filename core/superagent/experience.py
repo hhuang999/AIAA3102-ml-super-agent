@@ -335,7 +335,8 @@ class ExperienceStore:
             self._encode_lock.release()
 
     def search(
-        self, query: str, top_k: int, effect: int | None = None, kind: str | None = None
+        self, query: str, top_k: int, effect: int | None = None, kind: str | None = None,
+        *, record_ids: set[str] | None = None,
     ) -> list[Record]:
         query = (query or "")[:MAX_QUERY_CHARS].strip()
         if not query or top_k <= 0:
@@ -349,6 +350,7 @@ class ExperienceStore:
                 for i, r in enumerate(records)
                 if (effect is None or r.effect == effect)
                 and (kind is None or r.kind == kind)
+                and (record_ids is None or r.record_id in record_ids)
             ]
             kw = self._keyword_ranks(query, n, eligible)
             vecs = [
@@ -379,6 +381,45 @@ class ExperienceStore:
             int(self.cfg.get("rrf_k", 60)),
         )
         return [records[i] for i, _ in fused[:top_k]]
+
+
+def decision_context(facts, proposal, store=None):
+    """Retrieve a parent and comparable support and counterexamples at a fixed sequence."""
+    visible = {x["operation_id"]: x for x in facts if x["seq"] <= proposal.as_of_seq}
+    chosen = [key for key in proposal.evidence_ids if key in visible]
+    parent = next((x for x in visible.values() if x["node_id"] == proposal.parent_id), None)
+    if not parent:
+        return []
+    if parent["operation_id"] not in chosen:
+        chosen.insert(0, parent["operation_id"])
+    matching = [
+        row for row in visible.values()
+        if row["operation_id"] not in chosen
+        and (row["split_id"], row["metric"]) == (parent["split_id"], parent["metric"])
+        and row.get("rung") == parent.get("rung")
+        and (
+            row["action"] == proposal.action
+            or proposal.target and row.get("target") == proposal.target
+            or parent.get("failed_stage") and row.get("failed_stage") == parent["failed_stage"]
+        )
+    ]
+    for subset in ([x for x in matching if (x.get("gain") or 0) > 0],
+                   [x for x in matching if x.get("gain") is not None and x["gain"] <= 0
+                    or parent.get("failed_stage") and x.get("failed_stage") == parent["failed_stage"]]):
+        if not subset:
+            continue
+        if store is not None and len(subset) > 1:
+            matches = store.search(proposal.hypothesis, 1, record_ids={x["operation_id"] for x in subset})
+        else:
+            matches = []
+        chosen.append(matches[0].record_id if matches else subset[-1]["operation_id"])
+    fields = ("operation_id", "parent_id", "action", "method", "hypothesis", "target", "seed", "rung",
+              "score", "score_verified", "deliverable", "gain", "diagnostic", "reason", "failed_stage", "seconds")
+    selected = [{field: visible[key].get(field) for field in fields} for key in dict.fromkeys(chosen)]
+    for row in selected:
+        if row["failed_stage"] not in {"executed", "assessed", "verified"}:
+            row["reason"] = None
+    return selected
 
 
 def make_embedder(

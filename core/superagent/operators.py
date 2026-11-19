@@ -148,6 +148,46 @@ class Operators:
             return self.synthesis(parent)
         raise ValueError(f"unknown action {action}")
 
+    def experiment_candidate(self, dispatch, parent, evidence, planned):
+        """Generate a descendant of the selected parent and retain its approved plan."""
+        from .codegen import plan_coverage, planned_patch
+        from .planner import plan_experiment, python_symbols
+
+        proposal = dispatch.proposal
+        targeted = proposal.action == "repair" and proposal.target == "predict_only" and "predict_only" in python_symbols(parent.code)
+        if targeted:
+            plan = {
+                "schema_version": 1, "action": "repair", "evidence_ids": list(proposal.evidence_ids),
+                "hypothesis": "Correct the failing isolated inference path using the allowlisted inputs",
+                "changes": [{"id": "inference", "component": "train_eval", "target": "predict_only",
+                             "edit": "Fix the diagnosed inference failure while using the existing fitted model",
+                             "check": "The same model reproduces both CSVs and rejects corrupt weights"}],
+                "expected_observation": "The independent score is preserved and isolated reload passes",
+                "preserve": ["training", "fitted model", "split", "submission schema"],
+            }
+        else:
+            plan = plan_experiment(self.ctx, dispatch, parent, evidence)
+        planned(plan)
+        rules = self.ctx.task_desc + "\n" + self._rules()
+        if targeted:
+            rules += "\nFailure to repair: " + str((parent.artifact_verification or {}).get("error", ""))[-1500:]
+        extract = None
+        if plan["changes"][0]["target"] != "whole_script":
+            extract = planned_patch(self.ctx.gateway, dispatch.id, dispatch.signature, plan, parent.code, rules,
+                                    role="repair_coder" if targeted else "patch_coder")
+        if extract is None:
+            system = "Write a complete single-model classification script implementing the approved plan."
+            user = (f"{rules}\nPlan: {plan}\nObservations: {evidence}\n"
+                    f"Previous source:\n{parent.code}\nReturn a short method summary and one complete Python code block.")
+            fallback = self.codegen.full_script("script_coder", system, user, dispatch.id)
+            if fallback.extracted and not plan_coverage(plan, parent.code, fallback.extracted.code):
+                extract = fallback.extracted.code
+        node = self._new_node(dispatch.id, proposal.action, parent, plan["hypothesis"], extract or "")
+        node.structured_plan = plan
+        if extract is None:
+            self._codegen_failure(node, "plan_incomplete: not every approved change is present in the candidate")
+        return node
+
     # ------------------------------------------------------------------ draft
     def draft(self, root: Node) -> GenOutcome:
         ctx = self.ctx

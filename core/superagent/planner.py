@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ast
+import json
 import logging
+import re
 from typing import Any
 
 from .llm import Field
@@ -90,3 +93,100 @@ def render_plan(plan: dict[str, Any]) -> str:
 def structured_plan(gw: LLMGateway, system: str, user: str, node_id: str) -> dict[str, Any]:
     """One planner.structured call. Raises StructuredOutputError when every attempt fails."""
     return gw.structured("planner.structured", system, user, PLAN_SCHEMA, node_id=node_id, extra_check=normalize_and_check)
+
+
+EXPERIMENT_PLAN = {
+    "schema_version": Field("any", "the number 1"),
+    "action": Field("string", "the dispatched action"),
+    "evidence_ids": Field("string_list", "IDs from the supplied observations"),
+    "hypothesis": Field("string", "one falsifiable hypothesis for this task"),
+    "changes": Field("any", "list of {id, component, target, edit, check}"),
+    "expected_observation": Field("string", "the observation that tests the hypothesis"),
+    "preserve": Field("string_list", "unchanged interfaces or behavior"),
+}
+
+
+def python_symbols(code):
+    found = {}
+
+    def collect(nodes, prefix=""):
+        for node in nodes:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                name = prefix + node.name
+                found.setdefault(name, []).append(node)
+                if isinstance(node, ast.ClassDef):
+                    collect(node.body, name + ".")
+
+    collect(ast.parse(code).body)
+    return {name: nodes[0] for name, nodes in found.items() if len(nodes) == 1}
+
+
+def validate_experiment_plan(plan, action, visible_ids, code):
+    errors = []
+    if type(plan.get("schema_version")) is not int or plan["schema_version"] != 1 or plan.get("action") != action:
+        errors.append("schema_version must be 1 and action must match the dispatch")
+    ids = plan.get("evidence_ids", [])
+    if not isinstance(ids, list) or not ids or any(not isinstance(k, str) or k not in visible_ids for k in ids):
+        errors.append("evidence_ids must reference the provided snapshot observations")
+    for key in ("hypothesis", "expected_observation"):
+        if not isinstance(plan.get(key), str) or not plan[key].strip():
+            errors.append(f"{key} must describe this experiment")
+    preserve = plan.get("preserve")
+    if not isinstance(preserve, list) or not preserve or any(not isinstance(k, str) or not k.strip() for k in preserve):
+        errors.append("preserve must identify at least one unchanged interface")
+    changes = plan.get("changes")
+    if not isinstance(changes, list) or not 1 <= len(changes) <= 6:
+        return errors + ["changes must contain 1 to 6 target edits"]
+    symbols = python_symbols(code)
+    used_ids, targets = set(), set()
+    for change in changes:
+        fields = ("id", "component", "target", "edit", "check")
+        if not isinstance(change, dict) or any(not isinstance(change.get(k), str) or not change[k].strip() for k in fields):
+            errors.append("each change requires id, component, target, edit and check")
+            continue
+        ident, target = change["id"], change["target"]
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,24}", ident) or ident in used_ids:
+            errors.append(f"invalid or duplicate change ID {ident}")
+        if change["component"] not in COMPONENT_NAMES:
+            errors.append(f"unknown component {change['component']}")
+        if target not in symbols and target != "whole_script":
+            errors.append(f"target {target} does not identify a unique Python symbol")
+        if any(target == p or target.startswith(p + ".") or p.startswith(target + ".") for p in targets):
+            errors.append(f"overlapping edit target {target}")
+        targets.add(target)
+        used_ids.add(ident)
+        if change["edit"].strip().lower().rstrip(".") in {"improve model", "optimize model", "improve accuracy", "optimize performance"}:
+            errors.append(f"change {ident} needs a specific edit")
+    if "whole_script" in targets and len(changes) != 1:
+        errors.append("whole_script is a single broad change")
+    return errors
+
+
+def plan_experiment(ctx, dispatch, parent, evidence):
+    gateway = ctx.gateway
+    ledger = gateway.ledger
+    saved = ledger.get(dispatch.id, "experiment_plan", dispatch.signature)
+    if saved:
+        return saved
+    proposal = dispatch.proposal
+    visible = {row["operation_id"] for row in evidence}
+    task = ctx.flags["task_facts"]
+    parent_excerpt = parent.code[:24000]
+    names = sorted(python_symbols(parent.code))
+    system = "Plan a single classification experiment. The split, required outputs and isolated reload interface are fixed."
+    user = (
+        f"Task and input manifest:\n{ctx.task_desc}\n{json.dumps(task, ensure_ascii=False)}\n"
+        f"Dispatched action: {proposal.action}\nHypothesis to test: {proposal.hypothesis}\n"
+        f"Observations: {json.dumps(evidence, ensure_ascii=False)}\nSymbols: {', '.join(names)}\n"
+        f"Source excerpt:\n{parent_excerpt}\n"
+        "Use the exact Python symbol for each change. Use whole_script as the only target for a broad rewrite. "
+        "List separate changes when training and inference need separate edits. Cite the observation IDs used."
+    )
+
+    def check(plan, _last):
+        return plan, validate_experiment_plan(plan, proposal.action, visible, parent.code)
+
+    result = gateway.structured("planner.structured", system, user, EXPERIMENT_PLAN,
+                                node_id=dispatch.id, extra_check=check, resume_key=dispatch.signature)
+    ledger.put(dispatch.id, "experiment_plan", dispatch.signature, result)
+    return result
