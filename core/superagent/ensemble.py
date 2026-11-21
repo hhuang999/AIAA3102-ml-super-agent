@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import shutil
 from pathlib import Path
 from typing import Any, Sequence
@@ -38,12 +39,23 @@ def weights(scores: Sequence[float], higher_is_better: bool, strategy: str | Non
     Ties in a vote go to the higher-ranked member.
     """
     k = len(scores)
+    if k == 0:
+        return []
     if strategy in VOTE_STRATEGIES:
         return [1.0 / k] * k
-    base = [s if higher_is_better else 1.0 / (s + EPS) for s in scores]
+    vals = [float(s) for s in scores]
+    if higher_is_better and all(s > 0 for s in vals):
+        base = vals
+    elif not higher_is_better and all(s >= 0 for s in vals):
+        base = [1.0 / (s + EPS) for s in vals]
+    else:
+        ordered = [s if higher_is_better else -s for s in vals]
+        lo, hi = min(ordered), max(ordered)
+        span = hi - lo
+        base = [1.0 + ((v - lo) / span if span > EPS else 0.0) for v in ordered]
     raw = [b * (k - i) for i, b in enumerate(base)]
     total = sum(raw)
-    if total == 0:
+    if total <= 0:
         return [1.0 / k] * k
     return [r / total for r in raw]
 
@@ -259,7 +271,7 @@ def run_ensemble(output_dir: Path, top: list[dict[str, Any]], higher_is_better: 
         pred = Path(output_dir) / "top" / f"rank_{t['rank']:02d}" / "predictions.csv"
         if not pred.exists():
             continue
-        if not higher_is_better and t["score"] is not None and t["score"] < 0:
+        if t["score"] is None or not math.isfinite(float(t["score"])):
             continue
         cands.append({**t, "path": pred})
         if len(cands) >= int(cfg["max_candidates"]):

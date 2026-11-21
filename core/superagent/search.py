@@ -357,7 +357,7 @@ class SearchController:
                 p = ctx.progress()
                 sel = select(ctx.tree, scfg, p, lambda: synthesis_conditions(ctx.tree, scfg, ctx.progress()), ctx.rng)  # type: ignore[arg-type]
                 rec.selected, rec.mode, rec.weight = sel.node, sel.mode, sel.explore_weight
-                d = dispatch(ctx.tree, sel.node, scfg, p, ctx.rng)  # type: ignore[arg-type]
+                d = dispatch(ctx.tree, sel.node, scfg, p, ctx.rng, via_elite=(sel.mode == "elite_pick"))  # type: ignore[arg-type]
         except Exception as exc:  # noqa: BLE001
             log.error("selection failed: %s\n%s", exc, traceback.format_exc())
             rec.details["error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -456,7 +456,7 @@ class SearchController:
             with tree.lock:
                 backpropagate(follow, 0.0, False)  # leave the chain; its branch is free again
                 node, mode = elite_pick(tree, scfg, p, lambda: synthesis_conditions(tree, scfg, ctx.progress()), ctx.rng)  # type: ignore[arg-type]
-                d = dispatch(tree, node, scfg, p, ctx.rng)  # type: ignore[arg-type]
+                d = dispatch(tree, node, scfg, p, ctx.rng, via_elite=(mode == "elite_pick"))  # type: ignore[arg-type]
         except Exception as exc:  # noqa: BLE001
             log.error("selection after leaving a chain failed: %s\n%s", exc, traceback.format_exc())
             rec.details["error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -488,12 +488,20 @@ class SearchController:
                     return None
                 if d.action=="promote":
                     from .utils import new_id
-                    promoted=self.ops._new_node(new_id(),"promote",parent,parent.plan,parent.code)
+                    ctx._local.via_elite = bool(d.via_elite)
+                    try:
+                        promoted=self.ops._new_node(new_id(),"promote",parent,parent.plan,parent.code)
+                    finally:
+                        ctx._local.via_elite = False
                     promoted.trial_id=parent.trial_id or parent.id
                     promoted.rung=parent.rung+1
                     gen=GenOutcome(promoted,"promote",{"resume_from":parent.id})
                 else:
-                    gen=self.ops.generate(d.action,parent)
+                    ctx._local.via_elite = bool(d.via_elite)
+                    try:
+                        gen=self.ops.generate(d.action,parent)
+                    finally:
+                        ctx._local.via_elite = False
                 reserved = False
                 node = gen.node
                 rec.details.update(gen.details)
@@ -548,7 +556,8 @@ class SearchController:
             after_assessment_files(ctx, node)
             self._check_shutdown()
             outcome = self._finish_node(parent, node, rec)
-            ctx.llm_failure_streak = 0
+            with self._lock:
+                ctx.llm_failure_streak = 0
             return None if outcome.returned_to_root else node
         except Discarded:
             self._discard(parent, node, reserved, d, rec)
@@ -568,7 +577,8 @@ class SearchController:
                     self._discard(parent, None, reserved, d, rec)
                 return None
             if ctx.control is not None and ctx.control.name=="adaptive" and node is None:
-                ctx.control.censored.append((rec.action,time.monotonic()-rec.started))
+                with ctx.tree.lock:
+                    ctx.control.censored.append((rec.action,time.monotonic()-rec.started))
                 if isinstance(exc, PermanentCall) or not isinstance(exc, LLMUnavailableError) or any(tag in str(exc) for tag in ("budget exhausted", "cost limit")):
                     with ctx.tree.lock:
                         ctx.control.exhausted.add((parent.id,rec.action))
@@ -579,9 +589,11 @@ class SearchController:
                 ctx.stop_event.wait(min(1.0,max(0,ctx.time_left())))
             elif isinstance(exc, LLMUnavailableError):
                 log.warning("LLM step failed: %s", exc)
-                ctx.llm_failure_streak += 1
-                if ctx.llm_failure_streak >= LLM_FAILURE_STREAK_LIMIT:
-                    log.error("the LLM has been unavailable for %d tasks in a row; stopping the search", ctx.llm_failure_streak)
+                with self._lock:
+                    ctx.llm_failure_streak += 1
+                    streak = ctx.llm_failure_streak
+                if streak >= LLM_FAILURE_STREAK_LIMIT:
+                    log.error("the LLM has been unavailable for %d tasks in a row; stopping the search", streak)
                     ctx.stop_reason = "error"
                     ctx.stop_event.set()
             else:
@@ -693,7 +705,7 @@ class SearchController:
              "SUPERAGENT_FEATURE_NAMESPACE":ctx.flags.get("trial_environment",sig),
              "SUPERAGENT_TRIAL_SIGNATURE":sig, "SUPERAGENT_RUNG":str(node.rung),
              "SUPERAGENT_CHECKPOINT_DIR":str(ctx.executor.run_dir(node.id)/"checkpoints"),
-             "SUPERAGENT_DELIVERY_SECONDS":str(min(limit*.6, max(10,limit*.3)))}
+             "SUPERAGENT_DELIVERY_SECONDS":str(min(limit*0.5, max(10.0, min(limit*0.25, 180.0))))}
         node.trial_id=node.trial_id or node.id
         if node.rung:
             previous=ctx.executor.run_dir(node.parent.id)/"checkpoints"

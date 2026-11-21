@@ -168,8 +168,6 @@ def elite_pick(
         else:
             start = weighted_rank_choice(ranked, rng)
             chosen = walk_from(tree, start, cfg, synthesis_ok, rng)
-        if not chosen.is_root:
-            chosen.picked_by_elite = True
         return chosen, "elite_pick"
 
 

@@ -7,7 +7,7 @@ cd "$WORKDIR" || exit 1
 exec >>"$WORKDIR/setup.log" 2>&1
 echo "== start $(date -Is)"
 if ! command -v bwrap >/dev/null; then
-    apt-get install -y bubblewrap || exit 1
+    (apt-get update -qq && apt-get install -y bubblewrap) || exit 1
 fi
 pip install -q uv
 uv python install 3.11 && uv venv -q -p 3.11 "$WORKDIR/venv" && echo "== venv ok"

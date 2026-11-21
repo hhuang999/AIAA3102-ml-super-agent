@@ -151,24 +151,32 @@ def rank_proposals(snapshot, drafts, config, maximize):
         branch_children = children.get(parent, ())
         source = "generated"
 
-        def propose(action, why, tier=2, *, target=None, extra=(), seconds=0):
-            key = fingerprint([parent, action, target, row.get("trial_id"), row.get("rung"), row["seed"]])[:24]
+        def propose(action, why, tier=2, *, target=None, extra=(), seconds=0, slot=0):
+            key = fingerprint([parent, action, target, row.get("trial_id"), row.get("rung"), row["seed"], slot])[:24]
             add(Proposal(key, parent, action, why, source, action == "promote", snapshot.as_of_seq,
                          tuple(dict.fromkeys((row["operation_id"], *extra))), target, seconds,
                          {"promote": 0, "repair": 2}.get(action, 3)), why, tier)
 
+        non_cancelled = [r for r in branch_children if r.get("status") != "cancelled"]
         if not row["deliverable"]:
             valuable = snapshot.incumbent is None or row.get("score") is not None and direction * (row["score"] - snapshot.incumbent) > 0
-            repairs = sum(r["action"] == "repair" for r in branch_children)
+            repairs_all = sum(r["action"] == "repair" for r in branch_children)
+            repairs = sum(r["action"] == "repair" for r in non_cancelled)
             if row["action"] == "repair" and not row["score_verified"]:
                 continue
-            if repairs < search["max_repairs_per_node"] and valuable:
-                if row["score_verified"] and parent == snapshot.repairable:
-                    propose("repair", "repair isolated inference using the retained verified-score model", 0, target="predict_only")
-                elif not row["score_verified"] and snapshot.incumbent is None:
-                    propose("repair", "repair the observed training or scoring failure")
+            if row["score_verified"] and parent == snapshot.repairable:
+                if repairs < search["max_repairs_per_node"] and valuable:
+                    propose("repair", "repair isolated inference using the retained verified-score model",
+                            0, target="predict_only", slot=repairs_all)
+            elif not row["score_verified"] and row.get("status") != "cancelled":
+                if snapshot.incumbent is None and repairs < search["max_repairs_per_node"]:
+                    propose("repair", "repair the observed training or scoring failure", 1, slot=repairs_all)
+                elif (snapshot.incumbent is not None and row["action"] == "draft"
+                      and row.get("source") == "generated" and repairs < min(1, search["max_repairs_per_node"])):
+                    propose("repair", "repair the failed draft to unlock a distinct model family",
+                            2, slot=repairs_all)
             continue
-        if len(branch_children) >= search["max_refinements_per_node"]:
+        if len(non_cancelled) >= search["max_refinements_per_node"]:
             continue
         trial = row.get("trial_id")
         comparable = sorted(
@@ -196,22 +204,26 @@ def rank_proposals(snapshot, drafts, config, maximize):
                 rejected.append({"parent_id": parent, "action": "promote", "reason": "no_positive_comparable_gain" if gain is not None else "probe_already_attempted"})
         diagnostic = row.get("diagnostic") or {}
         collapsed = diagnostic.get("total", 0) >= 20 and diagnostic.get("truth_classes", 0) > 1 and diagnostic.get("predicted") == 1
+        refine_slot = sum(r["action"] == "refine" for r in branch_children)
         if (collapsed and gain is not None and gain <= threshold) or row.get("verified_feature_issue"):
             why = ("test one representation, optimizer or input hypothesis after sustained class collapse"
                    if collapsed else "test a representation that preserves the observed missing information")
-            propose("refine", why, 1, target="model_def", extra=tuple(r["operation_id"] for r in past[-2:]))
+            propose("refine", why, 1, target=None, extra=tuple(r["operation_id"] for r in past[-2:]), slot=refine_slot)
         else:
-            propose("refine", "test a targeted single-model improvement", target="model_def")
+            propose("refine", "test a targeted single-model improvement", target=None, slot=refine_slot)
         peers = [r for r in facts if r.get("branch_id") == row.get("branch_id") and r.get("gain") is not None
                  and r.get("status") == "completed"][-3:]
         if len(peers) == 3 and all(r["gain"] <= threshold for r in peers):
-            propose("retrospect", "change direction after three comparable non-improvements",
-                    extra=tuple(r["operation_id"] for r in peers), target="model_def")
+            retro_slot = sum(r["action"] == "retrospect" for r in branch_children)
+            if not any(r["action"] == "retrospect" for r in non_cancelled):
+                propose("retrospect", "change direction after three comparable non-improvements",
+                        extra=tuple(r["operation_id"] for r in peers), target=None, slot=retro_slot)
             donor = next((r for r in parents if r.get("branch_id") != row.get("branch_id")
                           and r["deliverable"] and direction * (r["score"] - row["score"]) > threshold), None)
-            if donor:
+            if donor and not any(r["action"] == "borrow" for r in non_cancelled):
+                borrow_slot = sum(r["action"] == "borrow" for r in branch_children)
                 propose("borrow", "adapt a useful method observed on a different branch", 1,
-                        extra=(donor["operation_id"],), target="model_def")
+                        extra=(donor["operation_id"],), target=None, slot=borrow_slot)
     scored.sort(key=lambda item: item[:4])
     if scored and scored[0][0] > 0 and snapshot.dispatched > 0 and (snapshot.dispatched + 1) % policy["explore_every"] == 0:
         root = next((i for i, offer in enumerate(scored) if offer[4].action == "draft"), None)
@@ -245,9 +257,11 @@ class AdaptiveController(Controller):
 
     def reserve(self):
         floor = float(self.ctx.cfg["run"]["finalize_reserve_seconds"])
+        with self.ctx.state_lock:
+            pub = list(self.publish_seconds)
         return max(
             min(floor, self.ctx.time_limit * 0.1),
-            2 * max(self.publish_seconds, default=0.0),
+            2 * max(pub, default=0.0),
         )
 
     def estimate(self, kind, state, parent=None):

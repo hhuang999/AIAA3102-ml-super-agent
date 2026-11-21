@@ -11,11 +11,21 @@ from pathlib import Path
 from .errors import InvalidInputError
 
 
+_NVIDIA_CONTROL_DEVICES = (
+    "/dev/nvidiactl",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-caps",
+)
+
+
 class Bubblewrap:
-    def __init__(self, training: Path, inference: Path, forbidden: Path, *, assets=None):
+    def __init__(self, training: Path, inference: Path, forbidden: Path, *, assets=None, num_gpus: int = 0):
         self.training = training
         self.inference = inference
         self.assets = assets or {}
+        self.num_gpus = max(0, int(num_gpus))
         self.binary = shutil.which("bwrap")
         if sys.platform != "linux" or not self.binary:
             raise InvalidInputError("verification_environment_unavailable: install Linux bubblewrap")
@@ -35,6 +45,16 @@ class Bubblewrap:
                 self.runtime.extend(("--symlink", os.readlink(root), str(root)))
             else:
                 self.runtime.extend(("--ro-bind", str(root), str(root)))
+        if self.num_gpus > 0:
+            for extra in ("/usr/local/nvidia", "/usr/local/cuda"):
+                ep = Path(extra)
+                if not ep.exists():
+                    continue
+                if ep.is_symlink():
+                    real = ep.resolve().as_posix()
+                    self.runtime.extend(("--ro-bind", real, real))
+                else:
+                    self.runtime.extend(("--ro-bind", ep.as_posix(), extra))
         for path in ("/etc/ld.so.cache", "/etc/localtime"):
             if Path(path).is_file():
                 self.runtime.extend(("--ro-bind", path, path))
@@ -87,9 +107,30 @@ class Bubblewrap:
             "SUPERAGENT_SMOKE", "SUPERAGENT_TRAIN_UNTIL", "SUPERAGENT_TRIAL_SIGNATURE",
             "SUPERAGENT_RUNG", "SUPERAGENT_DELIVERY_SECONDS", "SUPERAGENT_FEATURE_NAMESPACE",
             "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS", "TORCH_NUM_THREADS",
         ):
             if name in source_env:
                 env[name] = source_env[name]
+        if self.num_gpus > 0:
+            cuda_devs = source_env.get("CUDA_VISIBLE_DEVICES", "")
+            if cuda_devs:
+                env["CUDA_VISIBLE_DEVICES"] = cuda_devs
+                if "NVIDIA_VISIBLE_DEVICES" in source_env:
+                    env["NVIDIA_VISIBLE_DEVICES"] = source_env["NVIDIA_VISIBLE_DEVICES"]
+                for ctrl in _NVIDIA_CONTROL_DEVICES:
+                    if Path(ctrl).exists():
+                        command.extend(("--dev-bind", ctrl, ctrl))
+                tokens = [t.strip() for t in cuda_devs.split(",") if t.strip()]
+                if tokens and all(t.isdecimal() for t in tokens):
+                    for t in tokens:
+                        dev = Path(f"/dev/nvidia{t}")
+                        if dev.exists():
+                            command.extend(("--dev-bind", dev.as_posix(), dev.as_posix()))
+                elif tokens:
+                    for dev in sorted(Path("/dev").glob("nvidia[0-9]*")):
+                        command.extend(("--dev-bind", dev.as_posix(), dev.as_posix()))
+            elif "CUDA_VISIBLE_DEVICES" in source_env:
+                env["CUDA_VISIBLE_DEVICES"] = source_env["CUDA_VISIBLE_DEVICES"]
         for name, mount, writable in (
             ("SUPERAGENT_CHECKPOINT_DIR", "/job/checkpoints", True),
             ("SUPERAGENT_RESUME_DIR", "/job/resume", False),

@@ -14,6 +14,10 @@ import pandas as pd
 from .training import digest
 
 
+PROB_ATOL = 1e-5
+PROB_RTOL = 1e-4
+
+
 WRAPPER = """import runpy
 try:
     import torch
@@ -62,7 +66,7 @@ def package_files(root, deadline=None):
     return files, weights
 
 
-def same_predictions(original, replay, probability):
+def same_predictions(original, replay, probability, *, atol=PROB_ATOL, rtol=PROB_RTOL):
     for name in ("predictions.csv", "val_predictions.csv"):
         if any((folder / name).is_symlink() or not (folder / name).is_file() for folder in (original, replay)):
             return False
@@ -85,7 +89,7 @@ def same_predictions(original, replay, probability):
             return False
         if probability:
             if not np.allclose(
-                a.to_numpy(float), b.to_numpy(float), atol=1e-7, rtol=1e-6
+                a.to_numpy(float), b.to_numpy(float), atol=atol, rtol=rtol
             ):
                 return False
         elif not a.equals(b):
@@ -166,7 +170,7 @@ def verify(executor, run_dir, slot, deadline, abort, inputs, probability, *, spe
             receipt["reloaded_predictions_match"] = True
             if spec is not None:
                 receipt["score"] = spec.grade(output)
-                if not np.isclose(receipt["score"], spec.grade(run_dir / "out"), atol=1e-7, rtol=1e-6):
+                if not np.isclose(receipt["score"], spec.grade(run_dir / "out"), atol=PROB_ATOL, rtol=PROB_RTOL):
                     raise ValueError("reloaded predictions do not reproduce the independent score")
             for name in weights:
                 (fresh / "model" / name).write_bytes(

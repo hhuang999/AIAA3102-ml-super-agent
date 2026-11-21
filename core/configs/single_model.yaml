@@ -11,6 +11,8 @@ resources:
   parallel: 2
 pretrained:
   mode: "off"
+codegen:
+  staged_drafting: false
 ensemble:
   enabled: false
 operators:

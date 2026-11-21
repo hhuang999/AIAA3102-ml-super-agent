@@ -327,8 +327,7 @@ def run_task(
             facts["catalog_sha256"] = digest(worktree / "resources/method_catalog.yaml")
             matches = match_methods(facts, cat, load_cards(task, prof.modalities), local_dir=local_dir)
             eligible = [match for match in matches if match.eligible]
-            drafts = eligible[:3]
-            assets = stage_method_assets(drafts, out / "method_assets", local_dir)
+            assets = stage_method_assets(eligible, out / "method_assets", local_dir)
             methods = [
                 {**{key: value for key, value in asdict(m).items() if key != "entry"},
                  "weights_sha256": m.entry.get("weight_hashes") if m.eligible else None}
@@ -336,18 +335,22 @@ def run_task(
             ]
             facts["methods"] = methods
             atomic_write_json(paths.logs / "method_matches.json", methods)
-            ctx.catalog_text = render([m.entry for m in drafts], "catalog" if mode != "off" else mode)
+            catalog_entries = [m.entry for m in eligible if not m.entry.get("method")]
+            ctx.catalog_text = render(catalog_entries, "catalog" if mode != "off" else mode)
             task_notes = [m for m in eligible if m.entry.get("method")]
             if task_notes:
                 ctx.catalog_text += "\nTask methods:\n" + "\n".join(
-                    f"{m.key}: {m.hypothesis}. Avoid: {m.entry['counterexample']}. Source: {m.source}" for m in task_notes[:3]
+                    f"{m.key}: {m.hypothesis}. Avoid: {m.entry['counterexample']}. Source: {m.source}" for m in task_notes[:6]
                 )
             ctx.flags.update(formal=True, input_manifest=manifest, task_facts=facts,
                 runtime_environment={"schema_version": 1, "python": platform.python_version(), "packages": versions,
                                      "runtime_sha256": runtime_sha, "catalog_sha256": facts["catalog_sha256"]},
-                publish_lock=threading.Lock(), artifact_leases=set(), draft_methods=drafts)
+                publish_lock=threading.Lock(), artifact_leases=set(), draft_methods=eligible)
             atomic_write_json(paths.logs / "task_facts.json", facts)
-            executor.isolation = Bubblewrap(visible, out / "input_views/inference", task / "data", assets=assets)
+            executor.isolation = Bubblewrap(
+                visible, out / "input_views/inference", task / "data",
+                assets=assets, num_gpus=int(cfg["resources"]["num_gpus"]),
+            )
         # The prepared dataset is stable for the lifetime of this run; promotions never cross runs.
         ctx.flags["trial_environment"]=fingerprint([str(out),spec.signature if spec else raw_desc,
             mode,[(e["id"],e.get("example"),e.get("weight_hashes")) for e in cat.entries],cfg["run"]["seed"]])

@@ -308,7 +308,8 @@ def update_rankings(ctx: RunContext, n: Node | None) -> tuple[bool, bool]:
             if not ctx.flags.get("formal"):
                 incumbent(ctx, best)
             if ctx.control is not None and ctx.control.name=="adaptive":
-                ctx.control.publish_seconds.append(time.monotonic()-started)
+                with ctx.state_lock:
+                    ctx.control.publish_seconds.append(time.monotonic()-started)
             write_best(ctx, best)
             ctx.flags["written_best_id"] = best.id  # type: ignore[assignment]
         top_ids = [x.id for x in new_top]

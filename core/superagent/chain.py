@@ -63,8 +63,6 @@ def backpropagate(n: Node, value: float, count_visit: bool) -> None:
                 parent.keep_going = x.keep_going
         if x.kind in ("draft", "synthesis") and x.in_progress:
             x.in_progress = False
-        if x.no_gain_count > 0:
-            x.no_gain_count = 0
         if count_visit:
             x.visits += 1
             x.reward_sum += value
@@ -120,11 +118,10 @@ def chain_control(
         s_score = n.score
         must_return = False
         ended_no_gain = False
+        prev_no_gain = parent.no_gain_count if (parent is not None and not parent.is_root) else 0
         if n.ok:
             if parent is not None and parent.is_failed:
                 if s_score is not None:
-                    if cb is not None and cb.score is not None and d.better(s_score, cb.score):
-                        n.chain_best = n
                     n.keep_going = True
                 else:
                     must_return = True
@@ -132,9 +129,8 @@ def chain_control(
             if s_score is not None and cb_score is not None:
                 g = d.gain(s_score, cb_score)
                 if g < float(s["min_gain"]):
-                    assert cb is not None
-                    if cb.no_gain_count < int(s["max_no_gain"]):
-                        cb.no_gain_count += 1
+                    n.no_gain_count = prev_no_gain + 1
+                    if prev_no_gain < int(s["max_no_gain"]):
                         n.keep_going = True
                     else:
                         n.keep_going = False
@@ -143,9 +139,11 @@ def chain_control(
                         ended_no_gain = True
                 else:
                     n.chain_best = n
+                    n.no_gain_count = 0
                     n.keep_going = True
             elif s_score is not None:
                 n.chain_best = n
+                n.no_gain_count = 0
                 n.keep_going = True
             else:
                 must_return = True

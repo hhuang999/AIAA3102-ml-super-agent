@@ -232,13 +232,23 @@ class Operations:
 
         path = ctx.executor.run_dir(node.id) / "solution.py" if node else None
         source_hash = digest(path) if path and path.is_file() else fingerprint(node.code) if node and node.code else None
+        actual_hypothesis = (node.plan.strip() if node and node.plan and node.plan.strip() else dispatch.proposal.hypothesis)
+        actual_summary = (node.method_summary if node and node.method_summary else (node.plan[:500] if node and node.plan else ""))
+        actual_target = dispatch.proposal.target
+        if actual_target is None and node and node.structured_plan and isinstance(node.structured_plan.get("changes"), list):
+            comps = list(dict.fromkeys(
+                c.get("component") for c in node.structured_plan["changes"]
+                if isinstance(c, dict) and c.get("component")
+            ))
+            actual_target = ",".join(comps) if comps else None
         data = {
             "schema_version": 1, "operation_id": dispatch.id, "proposal_id": dispatch.proposal.proposal_id,
             "node_id": node.id if node else None, "parent_id": parent.id, "action": dispatch.proposal.action,
             "method": dispatch.proposal.method_id or dispatch.proposal.source, "source": dispatch.proposal.source,
-            "hypothesis": dispatch.proposal.hypothesis,
-            "method_summary": node.method_summary if node else None,
-            "source_sha256": source_hash, "target": dispatch.proposal.target, "branch_id": node.branch_id if node else parent.branch_id,
+            "hypothesis": actual_hypothesis,
+            "dispatch_reason": dispatch.proposal.hypothesis,
+            "method_summary": actual_summary or None,
+            "source_sha256": source_hash, "target": actual_target, "branch_id": node.branch_id if node else parent.branch_id,
             "seed": ctx.cfg["run"]["seed"], "split_id": ctx.task_spec.signature, "metric": ctx.task_spec.metric,
             "status": terminal, "failed_stage": details.get("failure_stage"), "reason": details.get("reason"),
             "seconds": time.monotonic() - dispatch.started,
@@ -257,8 +267,8 @@ class Operations:
         self.facts.append(deepcopy({**data, "seq": seq}))
         if ctx.experience is not None:
             try:
-                ctx.experience.add(Record(dispatch.id, dispatch.proposal.action, dispatch.proposal.hypothesis,
-                    node.method_summary if node else "", (gain > 0) - (gain < 0) if gain is not None else 0,
+                ctx.experience.add(Record(dispatch.id, dispatch.proposal.action, actual_hypothesis,
+                    actual_summary, (gain > 0) - (gain < 0) if gain is not None else 0,
                     data["score"], parent_fact["score"] if parent_fact else None, data["exec_seconds"], data["reason"], now_iso()))
             except OSError as exc:
                 log.warning("could not update derived experience index: %s", exc)

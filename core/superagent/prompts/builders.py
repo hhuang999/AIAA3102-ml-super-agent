@@ -141,7 +141,8 @@ STAGE_SPECIFIC = {
 
 
 def draft_stage(
-    task_desc: str, data_preview: str, root_summary: str, requirements: str, stage: str, previous: list[tuple[str, str, str]], mode: str
+    task_desc: str, data_preview: str, root_summary: str, requirements: str, stage: str,
+    previous: list[tuple[str, str, str]], mode: str, *, declared_split: bool = False,
 ) -> tuple[str, str]:
     system = DRAFT_SYSTEM + f" You are now responsible only for the {stage} step: write only this step's code, not the whole solution."
     if previous:
@@ -149,6 +150,11 @@ def draft_stage(
     else:
         prev = "This is the first step."
     specific = STAGE_SPECIFIC[stage]
+    if stage == "train_eval" and declared_split:
+        specific = specific.replace(
+            "The last printed line is the score marker.",
+            "Write out/val_predictions.csv, out/predictions.csv, and the standalone inference package under out/model/ (with inference.json), and ensure solution.py supports --predict-only.",
+        )
     if stage == "data_prep" and mode in ("catalog", "open"):
         specific += " " + policy.DATA_PREP_PRETRAINED_HINT
     if stage == "model_def":
@@ -173,23 +179,29 @@ First 2 to 3 sentences describing what this step does, then exactly one ```pytho
 
 
 def draft_integrator(
-    task_desc: str, data_preview: str, root_summary: str, requirements: str, steps: list[tuple[str, str, str]]
+    task_desc: str, data_preview: str, root_summary: str, requirements: str, steps: list[tuple[str, str, str]],
+    *, declared_split: bool = False,
 ) -> tuple[str, str]:
     system = ("You are good at writing clean, efficient machine learning code. You have received three pieces of code, "
               "each responsible for one part of a pipeline. Merge them into one coherent script that runs directly.")
     steps_text = "\n\n".join(f"## Step: {name}\nPlan: {plan}\n{code_block(code)}" for name, plan, code in steps)
+    final_req = (
+        "write ./out/val_predictions.csv and ./out/predictions.csv, save the standalone inference package in ./out/model/inference.json, and support --predict-only"
+        if declared_split else
+        "print the score marker, write the prediction file and save the model files"
+    )
     user = join_sections(
         *base_materials(task_desc, data_preview),
         attempts_section("Existing drafts (attempts summary)", root_summary),
         section("Steps to merge", steps_text),
         requirements,
-        """# Merging rules
+        f"""# Merging rules
 - Merge into a single runnable script.
 - You are the integrator, not the designer: integrate the steps faithfully and do not introduce models, algorithms or practices that are not in the steps.
 - Unify variable names across steps. Remove duplicate imports and definitions.
 - When steps conflict, the earlier step's design wins.
 - Execution order: data processing, model definition, training and evaluation.
-- The final code must print the score marker, write the prediction file and save the model files.
+- The final code must {final_req}.
 - Assume none of the steps has been executed before: do not skip any step and do not read intermediate artefacts.""",
         """# Output format
 First 2 to 3 sentences on how you merged the steps, then exactly one ```python code block containing the complete script.""",

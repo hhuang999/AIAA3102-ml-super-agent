@@ -210,6 +210,8 @@ def assess(ctx: RunContext, node: Node, res: ExecResult) -> dict[str, object]:
         if res.error_type or res.exit_code != 0:
             _fail(node, "continuation_no_progress" if res.error_type=="ContinuationError" else "artifact_contract" if res.error_type=="ArtifactError" else "timeout" if res.timed_out else "runtime_error")
             node.summary = res.error_message or "script failed"
+            if not node.method_summary and node.plan:
+                node.method_summary = node.plan[:500]
         else:
             try:
                 node.score = ctx.task_spec.grade(output)
@@ -231,6 +233,8 @@ def assess(ctx: RunContext, node: Node, res: ExecResult) -> dict[str, object]:
                 node.predictions_ok = False
                 _fail(node, "task_contract")
                 node.summary = str(exc)
+                if not node.method_summary and node.plan:
+                    node.method_summary = node.plan[:500]
             else:
                 if ctx.flags.get("formal") or ctx.task_spec.metric == "accuracy":
                     try:

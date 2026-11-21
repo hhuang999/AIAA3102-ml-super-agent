@@ -18,12 +18,21 @@ def make_submission(pred_csv: Path, sample_csv: Path, out_csv: Path) -> Path:
     if missing:
         raise ValueError(f"{pred_csv} lacks submission columns {missing}")
     id_col = cols[0]
-    expected, actual = sample[id_col], pred[id_col]
+    expected_raw = sample[id_col].astype(str)
+    expected = expected_raw.str.strip()
+    actual = pred[id_col].astype(str).str.strip()
     if (expected.empty or expected.duplicated().any() or actual.duplicated().any()
             or "" in set(expected) or set(actual) != set(expected)):
         raise ValueError(f"{pred_csv} must have one prediction per nonempty sample ID")
+    for c in cols[1:]:
+        if (pred[c].astype(str).str.strip() == "").any():
+            raise ValueError(f"{pred_csv} has empty prediction cells in column '{c}'")
     out_csv.parent.mkdir(parents=True, exist_ok=True)
-    pred.set_index(id_col).loc[expected].reset_index()[cols].to_csv(out_csv, index=False)
+    aligned = pred.copy()
+    aligned["_join_id"] = actual
+    aligned = aligned.set_index("_join_id").loc[expected].reset_index(drop=True)
+    aligned[id_col] = expected_raw.values
+    aligned[cols].to_csv(out_csv, index=False)
     return out_csv
 
 

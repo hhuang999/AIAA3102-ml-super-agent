@@ -383,6 +383,23 @@ class ExperienceStore:
         return [records[i] for i, _ in fused[:top_k]]
 
 
+def _changes_summary(sp: Any) -> str | None:
+    if not isinstance(sp, Mapping):
+        return None
+    changes = sp.get("changes")
+    if not isinstance(changes, list) or not changes:
+        return None
+    parts = []
+    for c in changes[:4]:
+        if not isinstance(c, Mapping):
+            continue
+        comp = c.get("component", "")
+        tgt = c.get("target", "")
+        edit = str(c.get("edit", "")).strip()[:120]
+        parts.append(f"{comp}.{tgt}: {edit}")
+    return "; ".join(parts) if parts else None
+
+
 def decision_context(facts, proposal, store=None):
     """Retrieve a parent and comparable support and counterexamples at a fixed sequence."""
     visible = {x["operation_id"]: x for x in facts if x["seq"] <= proposal.as_of_seq}
@@ -392,6 +409,14 @@ def decision_context(facts, proposal, store=None):
         return []
     if parent["operation_id"] not in chosen:
         chosen.insert(0, parent["operation_id"])
+    query = "\n".join(
+        p for p in (
+            parent.get("hypothesis"),
+            parent.get("method_summary"),
+            proposal.hypothesis,
+            parent.get("reason"),
+        ) if isinstance(p, str) and p.strip()
+    ).strip() or proposal.hypothesis
     matching = [
         row for row in visible.values()
         if row["operation_id"] not in chosen
@@ -409,16 +434,23 @@ def decision_context(facts, proposal, store=None):
         if not subset:
             continue
         if store is not None and len(subset) > 1:
-            matches = store.search(proposal.hypothesis, 1, record_ids={x["operation_id"] for x in subset})
+            matches = store.search(query, 1, record_ids={x["operation_id"] for x in subset})
         else:
             matches = []
         chosen.append(matches[0].record_id if matches else subset[-1]["operation_id"])
-    fields = ("operation_id", "parent_id", "action", "method", "hypothesis", "target", "seed", "rung",
-              "score", "score_verified", "deliverable", "gain", "diagnostic", "reason", "failed_stage", "seconds")
-    selected = [{field: visible[key].get(field) for field in fields} for key in dict.fromkeys(chosen)]
-    for row in selected:
-        if row["failed_stage"] not in {"executed", "assessed", "verified"}:
+    fields = ("operation_id", "node_id", "parent_id", "action", "method", "hypothesis", "method_summary",
+              "target", "seed", "rung", "score", "score_verified", "deliverable", "gain",
+              "diagnostic", "reason", "failed_stage", "seconds")
+    selected = []
+    for key in dict.fromkeys(chosen):
+        src = visible[key]
+        row = {field: src.get(field) for field in fields}
+        summary = _changes_summary(src.get("structured_plan"))
+        if summary:
+            row["changes_summary"] = summary
+        if row["failed_stage"] not in {"reviewed", "executed", "assessed", "verified"}:
             row["reason"] = None
+        selected.append(row)
     return selected
 
 

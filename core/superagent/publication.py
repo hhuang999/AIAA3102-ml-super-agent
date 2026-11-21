@@ -68,6 +68,8 @@ def publish_if_better(ctx, node):
     previous = latest(root)
     if previous and not ctx.direction.better(node.score, previous["score"]):
         return None
+    if ctx.stop_event.is_set():
+        return None
     source = ctx.executor.run_dir(node.id)
     dest = version(root)
     linked = False
@@ -103,8 +105,6 @@ def publish_if_better(ctx, node):
         }
         atomic_write_json(dest / "manifest.json", {"schema_version": 1, "files": manifest})
         with ctx.flags["publish_lock"]:
-            if ctx.stop_event.is_set():
-                return None
             previous = latest(root)
             if previous:
                 if (previous["task_contract_hash"], previous["split_id"], previous["protocol"]) != (spec.signature, spec.signature, info["protocol"]):

@@ -17,11 +17,18 @@ REPORT_RE = re.compile(r"Competition report:.*?(\{\s*\n.*\})", re.DOTALL)
 
 
 def parse_report(text: str) -> dict[str, Any] | None:
-    m = REPORT_RE.search(text)
-    if not m:
+    marker = "Competition report:"
+    pos = text.find(marker)
+    if pos < 0:
         return None
-    body = m.group(1)
-    return json.loads(body[: body.rfind("}") + 1])
+    brace = text.find("{", pos + len(marker))
+    if brace < 0:
+        return None
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(text, brace)
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 def grade(mlebench_bin: str, submission: Path, competition: str, data_dir: Path, raw_log: Path) -> dict[str, Any]:
@@ -41,8 +48,11 @@ def grade_all(core_out: Path, sample_csv: Path, mlebench_bin: str, competition: 
               results_dir: Path, include_top: bool = False) -> dict[str, Any]:
     """Grade the primary result and every comparison file; write ``grades.json`` and ``submission.csv``."""
     primary = primary_name(core_out)
+    cands = candidate_files(core_out, include_top)
+    if primary not in cands:
+        raise RuntimeError(f"primary prediction '{primary}' is missing in {core_out} (found: {sorted(cands)})")
     results: dict[str, Any] = {"primary": primary, "competition": competition, "grades": {}}
-    for name, pred in candidate_files(core_out, include_top).items():
+    for name, pred in cands.items():
         sub = make_submission(pred, sample_csv, results_dir / "submissions" / f"{name}.csv")
         results["grades"][name] = grade(mlebench_bin, sub, competition, data_dir, results_dir / "grader_raw" / f"{name}.log")
     (results_dir / "grades.json").write_text(json.dumps(results, indent=2), encoding="utf-8")

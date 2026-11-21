@@ -30,7 +30,7 @@ save_torch automatically records actual optimizer steps and model/optimizer stat
 Initialize model and optimizer before calling restore_torch, even on a fresh run (this attaches optimizer step observation); restore before the first update. Preserve last-epoch training state for continuation separately from best-validation inference weights. Never report a prediction-only rerun as more training.
 
 ## Persistent inference contract
-Save weights, architecture/config, label mapping and fitted preprocessing under ./out/model/. ./work is deleted after execution. A training checkpoint is not a replacement for this package.
+Save weights, architecture/config, tokenizers, label mapping and fitted preprocessing inside ./out/model/. ./work is deleted after execution, and /method_assets is NOT mounted during standalone --predict-only verification. Any pretrained backbone config/tokenizer/weights needed at inference time must be saved into ./out/model/ so --predict-only loads exclusively from --model-dir. A training checkpoint is not a replacement for this package.
 Write ./out/model/inference.json with {{"version": 1, "weight_files": ["weights.pt"]}} listing actual weight payloads relative to model/. Use the correct filename(s) for the framework, not a fixed .pt extension.
 The same solution.py must support:
 python solution.py --predict-only --model-dir ABS_MODEL_DIR --data-dir ABS_DATA_DIR --output-dir ABS_OUTPUT_DIR

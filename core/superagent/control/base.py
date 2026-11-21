@@ -8,6 +8,7 @@ static controller answers with fixed rules taken directly from the configuration
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Mapping
 
@@ -99,12 +100,14 @@ class ControlLog:
     def __init__(self, ctx: "RunContext") -> None:
         self.ctx = ctx
         self._last: dict[str, Any] = {}
+        self._lock = threading.Lock()
 
     def write(self, event: str, payload: Mapping[str, Any], key: str | None = None, state: RunState | None = None) -> None:
         if key is not None:
-            if self._last.get(key) == payload:
-                return
-            self._last[key] = dict(payload)
+            with self._lock:
+                if self._last.get(key) == payload:
+                    return
+                self._last[key] = dict(payload)
         row: dict[str, Any] = {"ts": now_iso(), "elapsed_secs": round(self.ctx.elapsed(), 1), "event": event}
         if state is not None:
             row["nodes"] = state.nodes_total

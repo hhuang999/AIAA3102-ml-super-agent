@@ -152,21 +152,22 @@ def check_content(pred_path: Path, sample_path: Path | None, threshold: float) -
         for c in cols:
             vals = pred[c].astype(str)
             stripped = vals.str.strip()
-            if stripped.nunique() == 2:
-                continue
             if n == 0:
                 continue
             empty_ratio = float((stripped == "").mean())
             if empty_ratio > threshold:
                 return ContentResult(False, f"column '{c}': {empty_ratio:.1%} of the values are empty")
+            seq = stripped.str.match(_ZERO_SEQ_RE) | stripped.str.match(_ONE_SEQ_RE)
+            if float(seq.mean()) > 0.5:
+                return ContentResult(False, f"column '{c}': most values are space-separated runs of 0 or 1 (placeholder masks)")
+            non_empty = stripped[stripped != ""]
+            if non_empty.nunique() == 2:
+                continue
             counts = stripped.value_counts()
             top_val, top_count = counts.index[0], int(counts.iloc[0])
             top_ratio = top_count / n
             if n > 2 and top_ratio > threshold:
                 return ContentResult(False, f"column '{c}': the value {top_val!r} makes up {top_ratio:.1%} of all predictions")
-            seq = stripped.str.match(_ZERO_SEQ_RE) | stripped.str.match(_ONE_SEQ_RE)
-            if float(seq.mean()) > 0.5:
-                return ContentResult(False, f"column '{c}': most values are space-separated runs of 0 or 1 (placeholder masks)")
         return ContentResult(True, "ok")
     except Exception as exc:  # noqa: BLE001 - a failing check counts as passed
         return ContentResult(True, f"content check skipped after an internal error: {type(exc).__name__}")

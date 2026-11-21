@@ -286,7 +286,13 @@ def save_torch(
         sampler=sampler_state,
         optimizer_steps=steps,
     )
-    with tempfile.TemporaryDirectory(dir=".") as folder:
+    ckpt_dir = os.environ.get("SUPERAGENT_CHECKPOINT_DIR")
+    if ckpt_dir:
+        Path(ckpt_dir).mkdir(parents=True, exist_ok=True)
+        tmp_parent = ckpt_dir
+    else:
+        tmp_parent = None
+    with tempfile.TemporaryDirectory(prefix=".save-torch-", dir=tmp_parent) as folder:
         file = Path(folder) / "state.pt"
         torch.save(state, file)
         save_checkpoint(
@@ -327,7 +333,11 @@ def restore_torch(model, optimizer, *, scheduler=None, scaler=None, generator=No
     random.setstate(s["python"])
     kind, keys, pos, has_gauss, cached = s["numpy"]
     np.random.set_state((kind, keys.numpy().astype("uint32"), pos, has_gauss, cached))
-    if s["cuda"]:
-        torch.cuda.set_rng_state_all(s["cuda"])
+    if s["cuda"] and torch.cuda.is_available():
+        n_dev = torch.cuda.device_count()
+        if len(s["cuda"]) == n_dev:
+            torch.cuda.set_rng_state_all(s["cuda"])
+        elif n_dev > 0:
+            torch.cuda.set_rng_state(s["cuda"][0])
     torch.set_rng_state(s["rng"])
     return s["epoch"], s["sampler"]

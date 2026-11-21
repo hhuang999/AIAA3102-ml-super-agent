@@ -65,8 +65,8 @@ class Operators:
             else:
                 n.chain_best = parent.chain_best
                 n.branch_id = parent.branch_id
-            n.via_elite = parent.picked_by_elite
-            parent.picked_by_elite = False
+            local_via_elite = getattr(ctx._local, "via_elite", None)
+            n.via_elite = bool(local_via_elite if local_via_elite is not None else parent.picked_by_elite)
             tree.attach(n, parent)
             if kind != "synthesis":
                 parent.pending_children = max(0, parent.pending_children - 1)
@@ -227,10 +227,12 @@ class Operators:
             details["codegen"] = "staged"
 
             def build_stage(stage: str, prev: list[tuple[str, str, str]]) -> tuple[str, str]:
-                return builders.draft_stage(ctx.task_desc, ctx.data_preview, summary, reqs, stage, prev, ctx.mode)
+                return builders.draft_stage(ctx.task_desc, ctx.data_preview, summary, reqs, stage, prev, ctx.mode,
+                                            declared_split=ctx.task_spec is not None)
 
             def build_int(steps: list[tuple[str, str, str]]) -> tuple[str, str]:
-                return builders.draft_integrator(ctx.task_desc, ctx.data_preview, summary, reqs, steps)
+                return builders.draft_integrator(ctx.task_desc, ctx.data_preview, summary, reqs, steps,
+                                                 declared_split=ctx.task_spec is not None)
 
             result, _plan = self.codegen.staged(build_stage, build_int, node_id)
             if result is None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import sys
 from dataclasses import dataclass
@@ -79,7 +80,7 @@ def select_entries(
                     if ok:
                         example = str(e["example"])
                         if e.get("library") == "timm":
-                            weight = str(folder / next(iter(rec["weights"])))
+                            weight = (folder / next(iter(rec["weights"]))).as_posix()
                             example = example.replace("pretrained=True", f"pretrained=True, pretrained_cfg_overlay={{'file':{weight!r}}}")
                         else:
                             example = example.replace(str(e["hub_id"]),folder.as_posix())
@@ -239,22 +240,38 @@ def match_methods(facts, catalog, task_cards=(), *, local_dir=None):
 
 
 def stage_method_assets(matches, root, local_dir):
-    """Copy verified snapshots with their configuration into the training allowlist."""
+    """Dereference verified snapshots (hardlink first, copy fallback) into the training allowlist."""
     mounts = {}
+    root = Path(root)
+    local_root = Path(local_dir).resolve()
     for match in matches:
         item = match.entry
-        if not match.eligible or not item["pretrained"]:
+        if not match.eligible or not item.get("pretrained"):
             continue
         snapshot = Path(item["snapshot"]).resolve()
-        if any(not path.resolve().is_relative_to(Path(local_dir).resolve()) for path in snapshot.rglob("*")):
+        if any(not path.resolve().is_relative_to(local_root) for path in snapshot.rglob("*")):
             raise ValueError(f"asset path outside verified cache: {match.key}")
         destination = root / match.method_id
-        shutil.copytree(snapshot, destination)
+        if destination.exists():
+            shutil.rmtree(destination)
+        destination.mkdir(parents=True, exist_ok=True)
+        for path in sorted(snapshot.rglob("*")):
+            rel = path.relative_to(snapshot)
+            dst = destination / rel
+            if path.is_dir():
+                dst.mkdir(parents=True, exist_ok=True)
+            elif path.is_file():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                src = path.resolve()
+                try:
+                    os.link(src, dst)
+                except OSError:
+                    shutil.copy2(src, dst)
         from .training import digest
 
         if any(digest(destination / path) != sha for path, sha in item["weight_hashes"].items()):
             raise ValueError(f"asset contents changed while staging {match.key}")
         sandbox_path = f"/method_assets/{match.method_id}"
-        item["example"] = item["example"].replace(snapshot.as_posix(), sandbox_path)
+        item["example"] = item["example"].replace(snapshot.as_posix(), sandbox_path).replace(str(snapshot), sandbox_path)
         mounts[sandbox_path] = destination
     return mounts

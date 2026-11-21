@@ -10,6 +10,7 @@ from typing import Any
 
 from .llm import Field
 from .llm.gateway import LLMGateway
+from .textfmt import trim_with
 
 log = logging.getLogger("superagent")
 
@@ -149,7 +150,7 @@ def validate_experiment_plan(plan, action, visible_ids, code):
             errors.append(f"invalid or duplicate change ID {ident}")
         if change["component"] not in COMPONENT_NAMES:
             errors.append(f"unknown component {change['component']}")
-        if target not in symbols and target != "whole_script":
+        if target not in symbols and target not in ("whole_script", "__imports__"):
             errors.append(f"target {target} does not identify a unique Python symbol")
         if any(target == p or target.startswith(p + ".") or p.startswith(target + ".") for p in targets):
             errors.append(f"overlapping edit target {target}")
@@ -162,6 +163,68 @@ def validate_experiment_plan(plan, action, visible_ids, code):
     return errors
 
 
+def _smart_source_excerpt(code: str, max_chars: int = 24000) -> str:
+    """Keep header/imports, symbol outline and entry points (predict_only, fit, main, __main__) within max_chars."""
+    if len(code) <= max_chars:
+        return code
+    lines = code.splitlines()
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        half = max(200, max_chars // 2 - 30)
+        return code[:half] + "\n# ... [middle omitted] ...\n" + code[-half:]
+    outline = []
+    preserved_spans: list[tuple[int, int]] = []
+    imp_end = 0
+    for node in tree.body:
+        end_ln = getattr(node, "end_lineno", node.lineno)
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            imp_end = max(imp_end, end_ln)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            outline.append(f"# L{node.lineno}-{end_ln}: {node.name}")
+            if node.name in ("predict_only", "fit", "main"):
+                preserved_spans.append((node.lineno, end_ln))
+        elif isinstance(node, ast.If) and "__main__" in ast.unparse(node.test):
+            preserved_spans.append((node.lineno, end_ln))
+    if imp_end == 0:
+        imp_end = min(len(lines), 25)
+    head = "\n".join(lines[:imp_end])
+    outline_block = "\n".join(outline)
+    preserved_spans.sort()
+    tail_parts = []
+    covered_lines: set[int] = set(range(1, imp_end + 1))
+    for s, e in preserved_spans:
+        if any(ln in covered_lines for ln in range(s, e + 1)):
+            s = max(s, imp_end + 1)
+        if s <= e:
+            tail_parts.append(f"# [L{s}-{e}]\n" + "\n".join(lines[s - 1:e]))
+            covered_lines.update(range(s, e + 1))
+    tail_block = "\n\n".join(tail_parts)
+    if len(tail_block) > max_chars // 2:
+        tail_block = tail_block[: max_chars // 2 - 25] + "\n# ... [entry truncated]"
+    fixed_len = len(head) + len(outline_block) + len(tail_block) + 120
+    middle_budget = max(0, max_chars - fixed_len)
+    middle_lines = []
+    used = 0
+    for ln in range(imp_end + 1, len(lines) + 1):
+        if ln in covered_lines:
+            continue
+        text_ln = lines[ln - 1]
+        if used + len(text_ln) + 1 > middle_budget:
+            middle_lines.append("# ... [remaining middle lines omitted] ...")
+            break
+        middle_lines.append(text_ln)
+        used += len(text_ln) + 1
+    parts = [head]
+    if outline_block:
+        parts.append("# Symbol index:\n" + outline_block)
+    if middle_lines:
+        parts.append("\n".join(middle_lines))
+    if tail_block:
+        parts.append("# Preserved entry points:\n" + tail_block)
+    return "\n\n".join(parts)[:max_chars]
+
+
 def plan_experiment(ctx, dispatch, parent, evidence):
     gateway = ctx.gateway
     ledger = gateway.ledger
@@ -171,15 +234,30 @@ def plan_experiment(ctx, dispatch, parent, evidence):
     proposal = dispatch.proposal
     visible = {row["operation_id"] for row in evidence}
     task = ctx.flags["task_facts"]
-    parent_excerpt = parent.code[:24000]
+    parent_excerpt = _smart_source_excerpt(parent.code, 24000)
     names = sorted(python_symbols(parent.code))
-    system = "Plan a single classification experiment. The split, required outputs and isolated reload interface are fixed."
+    parent_out = trim_with(ctx.cfg, parent.output)[:4000] if getattr(parent, "output", None) else ""
+    data_prev = (getattr(ctx, "data_preview", "") or "")[:3000]
+    catalog = (getattr(ctx, "catalog_text", "") or "")[:3000]
+    borrow_block = ""
+    if proposal.action == "borrow":
+        donor_id = next((r.get("node_id") for r in evidence if r.get("node_id") and r.get("node_id") != parent.id and r.get("node_id") in ctx.tree.by_id), None)
+        if donor_id:
+            donor = ctx.tree.by_id[donor_id]
+            borrow_block = f"\nDonor method ({donor_id}): {donor.method_summary or donor.plan[:400]}\nDonor excerpt:\n{_smart_source_excerpt(donor.code, 4000)}\n"
+    system = "Plan a single classification experiment choosing the most impactful component(s) among data_prep, model_def and train_eval. The split, required outputs and isolated reload interface are fixed."
     user = (
         f"Task and input manifest:\n{ctx.task_desc}\n{json.dumps(task, ensure_ascii=False)}\n"
-        f"Dispatched action: {proposal.action}\nHypothesis to test: {proposal.hypothesis}\n"
-        f"Observations: {json.dumps(evidence, ensure_ascii=False)}\nSymbols: {', '.join(names)}\n"
+        + (f"Data preview:\n{data_prev}\n" if data_prev else "")
+        + (f"Available catalog methods/assets:\n{catalog}\n" if catalog else "")
+        + f"Dispatched action: {proposal.action}\nHypothesis to test: {proposal.hypothesis}\n"
+        + f"Observations: {json.dumps(evidence, ensure_ascii=False)}\n"
+        + (f"Parent run output / diagnostics:\n{parent_out}\n" if parent_out else "")
+        + borrow_block
+        + f"Symbols: {', '.join(names)}\n"
         f"Source excerpt:\n{parent_excerpt}\n"
-        "Use the exact Python symbol for each change. Use whole_script as the only target for a broad rewrite. "
+        "Use the exact Python symbol (or '__imports__' for pure import additions, or 'whole_script' only for a broad rewrite). "
+        "Choose component(s) from data_prep, model_def, train_eval based on diagnostics. "
         "List separate changes when training and inference need separate edits. Cite the observation IDs used.\n"
         'Example JSON shape: {"schema_version": 1, "action": "refine", "evidence_ids": ["<op_id>"], '
         '"hypothesis": "...", "changes": [{"id": "c1", "component": "model_def", "target": "build_model", '
