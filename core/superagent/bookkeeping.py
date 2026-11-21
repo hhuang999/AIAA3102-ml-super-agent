@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -33,12 +34,20 @@ def save_experience(ctx: RunContext, node: Node) -> None:
     error_text = None
     if node.kind == "repair" and parent is not None:
         error_text = trim_with(ctx.cfg, parent.output)
+    ref_score = None
+    if node.kind in ("draft", "synthesis") and node.ok:
+        with ctx.tree.lock:
+            others = [n.score for n in ctx.tree.nodes if n is not node and n.ok and n.score is not None]
+        if len(others) >= 2:
+            ref_score = statistics.median(others)
     rec = Record(
         record_id=node.id,
         kind="diagnostic" if diagnostic else node.kind,
         plan=node.plan,
         method_summary=node.method_summary or node.plan[:500],
-        effect=0 if diagnostic else effect_label(node.kind, node.score, parent_score, ctx.direction.better),  # type: ignore[arg-type]
+        effect=-1 if diagnostic else effect_label(
+            node.kind, node.score, parent_score, ctx.direction.better, reference_score=ref_score,  # type: ignore[arg-type]
+        ),
         score=node.score,
         parent_score=parent_score,
         exec_seconds=node.exec_seconds,

@@ -35,6 +35,7 @@ MIN_TXT_FILES_FOR_TEXT = 20
 ID_SHORT_STRING_MAX_CHARS = 40
 PATH_COLUMN_MAJORITY = 0.5
 MAX_FILE_NAMES_INDEXED = 500_000
+TREE_LINE_COUNT_MAX_BYTES = 50 * 1024 * 1024
 
 IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp"})
 TABLE_EXTS = frozenset({".csv", ".tsv"})
@@ -112,9 +113,10 @@ def build_tree(root: Path) -> tuple[str, list[Path]]:
 
     def size_label(p: Path) -> str:
         try:
-            if _is_text_file(p):
+            size = p.stat().st_size
+            if size <= TREE_LINE_COUNT_MAX_BYTES and _is_text_file(p):
                 return f"{_count_lines(p)} lines"
-            return human_bytes(p.stat().st_size)
+            return human_bytes(size)
         except OSError:
             return "unreadable"
 
@@ -404,8 +406,11 @@ def detect_modalities(root: Path, cfg: Mapping[str, Any]) -> list[str]:
             file_names.add(p.name)
         if ext in TFRECORD_EXTS and n_images < min_images:
             from .contract import records, image_features
-            if image_features(next(records(p), {})):
-                n_images = min_images
+            try:
+                if image_features(next(records(p), {})):
+                    n_images = min_images
+            except Exception:  # noqa: BLE001
+                continue
         if ext in IMAGE_EXTS:
             n_images += 1
         elif ext == ".txt":

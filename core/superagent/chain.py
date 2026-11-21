@@ -29,7 +29,7 @@ def reward_for(n: Node) -> float:
 
 
 def step_reward(n: Node, tree: SearchTree, min_gain: float) -> float:
-    """Reward of one evaluated node: -1 failed, 0.5 first success of its branch, 1 new branch best, 0 otherwise."""
+    """Reward of one evaluated node: -1 failed, 0.5 first branch success, 0.75..1.5 scaled gain, 0 otherwise."""
     if not n.ok or n.score is None:
         return -1.0
     with tree.lock:
@@ -37,7 +37,12 @@ def step_reward(n: Node, tree: SearchTree, min_gain: float) -> float:
         if not earlier:
             return 0.5
         prev = tree.sorted_ok(earlier)[0]
-        return 1.0 if tree.direction.gain(n.score, prev.score) >= min_gain else 0.0  # type: ignore[arg-type]
+        assert prev.score is not None
+        g = tree.direction.gain(n.score, prev.score)
+        if g < min_gain:
+            return 0.0
+        rel = g / max(abs(prev.score), 0.05)
+        return min(1.5, 0.75 + 0.75 * min(1.0, rel / 0.05))
 
 
 def add_reward(n: Node, value: float) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import statistics
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
@@ -11,6 +12,7 @@ from dataclasses import asdict, dataclass
 
 from . import single_model
 from .control.adaptive import Proposal, Snapshot, rank_proposals
+from .control.state import StepTiming
 from .experience import Record, decision_context
 from .errors import LLMUnavailableError, StructuredOutputError
 from .llm.ledger import CancelledCall, DeferredCall, fingerprint
@@ -266,10 +268,30 @@ class Operations:
         seq = self.ledger.record_experiment(dispatch.id, data, terminal)
         self.facts.append(deepcopy({**data, "seq": seq}))
         if ctx.experience is not None:
+            if terminal == "failed":
+                effect = -1
+            elif gain is not None:
+                effect = (gain > 0) - (gain < 0)
+            elif data["score"] is not None:
+                prior_scores = [
+                    r["score"] for r in self.facts[:-1]
+                    if r.get("score") is not None and r.get("status") == "completed"
+                ]
+                if len(prior_scores) >= 2:
+                    ref_score = statistics.median(prior_scores)
+                    effect = 1 if (ctx.direction.better(data["score"], ref_score) or data["score"] == ref_score) else -1
+                else:
+                    effect = 1
+            else:
+                effect = 0
+            err_text = (
+                (parent_fact.get("reason") if dispatch.proposal.action == "repair" and parent_fact else None)
+                or data["reason"]
+            )
             try:
                 ctx.experience.add(Record(dispatch.id, dispatch.proposal.action, actual_hypothesis,
-                    actual_summary, (gain > 0) - (gain < 0) if gain is not None else 0,
-                    data["score"], parent_fact["score"] if parent_fact else None, data["exec_seconds"], data["reason"], now_iso()))
+                    actual_summary, effect, data["score"], parent_fact["score"] if parent_fact else None,
+                    data["exec_seconds"], err_text, now_iso()))
             except OSError as exc:
                 log.warning("could not update derived experience index: %s", exc)
         return data, seq
@@ -312,9 +334,26 @@ class Operations:
             self._record(dispatch, None, details, terminal)
         else:
             single_model.finish(ctx, node, details, lambda: self._record(dispatch, node, details, terminal))
+        if hasattr(ctx, "record_step"):
+            ctx.record_step(StepTiming(
+                step=node.step if node is not None else None,
+                node_id=node.id if node is not None else dispatch.id,
+                kind=dispatch.proposal.action,
+                ok=bool(details.get("deliverable")),
+                step_seconds=max(0.0, time.monotonic() - dispatch.started),
+                exec_seconds=node.exec_seconds if node is not None else None,
+            ))
         parent_id = dispatch.proposal.parent_id
         if dispatch.proposal.action == "repair" and ctx.flags.get("repairable_id") == parent_id:
-            ctx.flags.pop("repairable_id", None)
+            if terminal == "completed":
+                ctx.flags.pop("repairable_id", None)
+            elif terminal == "failed":
+                used = sum(
+                    1 for r in self.facts
+                    if r.get("parent_id") == parent_id and r.get("action") == "repair" and r.get("status") != "cancelled"
+                )
+                if used >= int(ctx.cfg["search"]["max_repairs_per_node"]):
+                    ctx.flags.pop("repairable_id", None)
         if parent_id in self.parent_claims:
             self.parent_claims[parent_id] -= 1
             if not self.parent_claims[parent_id]:

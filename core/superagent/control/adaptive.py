@@ -199,7 +199,7 @@ def rank_proposals(snapshot, drafts, config, maximize):
             if gain is not None and gain > threshold:
                 propose("promote", "verified checkpoint and positive comparable training gain", 1, extra=extra, seconds=seconds)
             elif gain is None and not trials:
-                propose("promote", "one probe of the next training rung", extra=extra, seconds=seconds)
+                propose("promote", "one probe of the next training rung", 1, extra=extra, seconds=seconds)
             else:
                 rejected.append({"parent_id": parent, "action": "promote", "reason": "no_positive_comparable_gain" if gain is not None else "probe_already_attempted"})
         diagnostic = row.get("diagnostic") or {}

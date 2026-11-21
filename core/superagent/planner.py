@@ -234,6 +234,12 @@ def plan_experiment(ctx, dispatch, parent, evidence):
     proposal = dispatch.proposal
     visible = {row["operation_id"] for row in evidence}
     task = ctx.flags["task_facts"]
+    compact_task = {
+        "metric": task.get("metric"),
+        "maximize": task.get("maximize"),
+        "capabilities": task.get("capabilities"),
+        "eligible_methods": [m["method_id"] for m in task.get("methods", []) if m.get("eligible")],
+    }
     parent_excerpt = _smart_source_excerpt(parent.code, 24000)
     names = sorted(python_symbols(parent.code))
     parent_out = trim_with(ctx.cfg, parent.output)[:4000] if getattr(parent, "output", None) else ""
@@ -247,7 +253,7 @@ def plan_experiment(ctx, dispatch, parent, evidence):
             borrow_block = f"\nDonor method ({donor_id}): {donor.method_summary or donor.plan[:400]}\nDonor excerpt:\n{_smart_source_excerpt(donor.code, 4000)}\n"
     system = "Plan a single classification experiment choosing the most impactful component(s) among data_prep, model_def and train_eval. The split, required outputs and isolated reload interface are fixed."
     user = (
-        f"Task and input manifest:\n{ctx.task_desc}\n{json.dumps(task, ensure_ascii=False)}\n"
+        f"Task and input manifest:\n{ctx.task_desc}\nTask capabilities & metric: {json.dumps(compact_task, ensure_ascii=False)}\n"
         + (f"Data preview:\n{data_prev}\n" if data_prev else "")
         + (f"Available catalog methods/assets:\n{catalog}\n" if catalog else "")
         + f"Dispatched action: {proposal.action}\nHypothesis to test: {proposal.hypothesis}\n"

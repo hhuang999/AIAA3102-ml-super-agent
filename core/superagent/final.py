@@ -67,6 +67,36 @@ def half_of(sample_id: str) -> int:
     return int(hashlib.md5(sample_id.encode("utf-8")).hexdigest(), 16) % 2
 
 
+def stratified_halves(rows: list[str], truth: pd.DataFrame) -> list[list[str]]:
+    if not rows:
+        return [[], []]
+    sub = truth.loc[rows]
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for r, vals in zip(rows, sub.itertuples(index=False, name=None)):
+        key = tuple(str(v).strip() for v in vals)
+        groups.setdefault(key, []).append(r)
+    halves: list[list[str]] = [[], []]
+    singletons: list[str] = []
+    for key in sorted(groups):
+        items = sorted(groups[key], key=lambda s: (hashlib.md5(s.encode("utf-8")).hexdigest(), s))
+        if len(items) == 1:
+            singletons.append(items[0])
+            continue
+        for idx, item in enumerate(items):
+            halves[idx % 2].append(item)
+    for item in sorted(singletons, key=lambda s: (hashlib.md5(s.encode("utf-8")).hexdigest(), s)):
+        h = 0 if len(halves[0]) <= len(halves[1]) else 1
+        halves[h].append(item)
+    order = {r: i for i, r in enumerate(rows)}
+    return [sorted(h, key=order.__getitem__) for h in halves]
+
+
+def _spec_encoding(spec: Any) -> str:
+    if not spec.probability:
+        return "label"
+    return "binary_prob" if len(spec.columns) == 2 else "multi_prob"
+
+
 def _frames(vals: Sequence[ValFiles], rows: list[str], id_col: str) -> list[pd.DataFrame]:
     out = []
     for v in vals:
@@ -183,7 +213,7 @@ def evaluate(scorer: Scorer, scores: Sequence[float], rows: list[str], hib: bool
     n = len(scores)
     if scorer.secondary is None:
         tie_gain = None
-    halves = [[r for r in rows if half_of(r) == h] for h in (0, 1)]
+    halves = stratified_halves(rows, scorer.truth)
     single = [scorer.pair(_single(n), h) for h in halves]
     results: list[dict[str, Any]] = []
     plans: list[tuple[str, Callable[[list[str]], list[float]]]] = [
@@ -310,7 +340,7 @@ def build_final(output_dir: Path, cands: Sequence[Candidate], higher_is_better: 
         info["node_id"] = chosen[0][0].node_id
         if spec:
             info["metric"] = spec.metric
-            info["encoding"] = "multi_prob" if spec.probability else "label"
+            info["encoding"] = _spec_encoding(spec)
             if info["validation"] is None:
                 info["validation"] = {}
             info["validation"].update(score=chosen[0][0].score, rows=len(spec.truth))
@@ -341,8 +371,8 @@ def _choose(cands: Sequence[Candidate], columns: list[str], fmt: Mapping[str, An
     ident: Identification = identify_metric([(v, c.score) for v, c in zip(vals, cands)], hib)
     if spec:
         from .metrics import metric_library
-        encoding = "multi_prob" if spec.probability else "label"
-        metric = next(m for m in metric_library() if m.encoding == encoding and m.name == spec.metric)
+        encoding = _spec_encoding(spec)
+        metric = next((m for m in metric_library() if m.encoding == encoding and m.name == spec.metric), None)
         from dataclasses import replace
         ident = replace(ident, metric=metric, encoding=encoding, reason="task_contract")
     info["metric"] = ident.metric.name if ident.metric else None
@@ -424,4 +454,4 @@ def _choose(cands: Sequence[Candidate], columns: list[str], fmt: Mapping[str, An
     return chosen, info
 
 
-__all__ = ["Candidate", "FINAL_SCRIPT", "Scorer", "build_final", "evaluate", "greedy_weights", "half_of", "tie_break_metric"]
+__all__ = ["Candidate", "FINAL_SCRIPT", "Scorer", "build_final", "evaluate", "greedy_weights", "half_of", "stratified_halves", "tie_break_metric"]

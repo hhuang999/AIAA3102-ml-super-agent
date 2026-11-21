@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Mapping
 
 from .selection import is_full
@@ -18,13 +19,25 @@ class Dispatch:
     via_elite: bool = False
 
 
+def _after_best_finished(n: Node, best: Node) -> bool:
+    if not best.finished_at or not n.created_at:
+        return True
+    try:
+        return datetime.fromisoformat(n.created_at) >= datetime.fromisoformat(best.finished_at)
+    except ValueError:
+        return True
+
+
 def attempts_since_branch_best(tree: SearchTree, branch: int) -> int | None:
     """Evaluated nodes (successful or failed) of ``branch`` after its best node; None without a success."""
     with tree.lock:
         best = tree.branch_best(branch)
         if best is None or best.step is None:
             return None
-        return sum(1 for n in tree.nodes if n.branch_id == branch and n.step is not None and n.step > best.step)
+        return sum(
+            1 for n in tree.nodes
+            if n.branch_id == branch and n.step is not None and n.step > best.step and _after_best_finished(n, best)
+        )
 
 
 def branch_plateau(tree: SearchTree, branch: int, window: int, enabled: bool = True, count_failed: bool = False) -> bool:

@@ -319,7 +319,11 @@ def run_task(
                     versions[package] = version(package)
                 except PackageNotFoundError:
                     continue
-            facts = build_task_facts(spec, manifest, {"modalities": prof.modalities, "dependencies": versions}, run_id)
+            facts = build_task_facts(
+                spec, manifest,
+                {"modalities": prof.modalities, "dependencies": versions, "num_gpus": int(cfg["resources"]["num_gpus"])},
+                run_id,
+            )
             worktree = Path(__file__).parent
             runtime_sha = fingerprint([(file.relative_to(worktree).as_posix(), digest(file))
                 for file in sorted(worktree.rglob("*")) if file.is_file() and file.suffix in (".py", ".yaml")])

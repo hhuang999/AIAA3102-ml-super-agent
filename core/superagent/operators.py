@@ -41,7 +41,17 @@ class Operators:
     # ------------------------------------------------------------------ helpers
     def _rules(self) -> str:
         v = self.ctx.cfg["validation_rule"]
-        return blocks.implementation_rules(self.ctx.resources(), int(v["split_seed"]), float(v["validation_fraction"]), declared_split=self.ctx.task_spec is not None)
+        include_torch = bool(
+            getattr(self.ctx.executor, "num_gpus", 0) > 0
+            or any(m in ("image", "text") for m in self.ctx.modalities)
+        )
+        return blocks.implementation_rules(
+            self.ctx.resources(),
+            int(v["split_seed"]),
+            float(v["validation_fraction"]),
+            declared_split=self.ctx.task_spec is not None,
+            include_torch=include_torch,
+        )
 
     def _env(self) -> str:
         if self.ctx.flags.get("formal"):

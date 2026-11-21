@@ -176,6 +176,15 @@ BASELINE_ORDER = (
     "tab_linear", "text_tfidf_linear", "img_classic", "tab_forest", "img_scratch_cnn",
     "tab_gbdt", "text_scratch_nn",
 )
+GPU_BASELINE_ORDER = (
+    "tab_linear", "text_tfidf_linear", "img_classic", "tab_gbdt",
+    "img_dinov2_small_features", "text_qwen3_embedding_features",
+    "img_convnext_tiny_finetune", "text_deberta_v3_base_finetune", "text_xlm_roberta_base_finetune",
+    "tab_forest", "img_scratch_cnn", "text_scratch_nn",
+)
+DEFAULT_CATALOG_METRICS = frozenset({
+    "accuracy", "log_loss", "roc_auc", "f1_macro", "f1_weighted", "balanced_accuracy",
+})
 
 
 def match_methods(facts, catalog, task_cards=(), *, local_dir=None):
@@ -195,7 +204,7 @@ def match_methods(facts, catalog, task_cards=(), *, local_dir=None):
         snapshot = effective.get("snapshot")
         if entry["modality"] not in modalities:
             reason = "incompatible_modality"
-        elif facts["metric"] not in effective.get("metrics", ["accuracy", "log_loss"]):
+        elif facts["metric"] not in effective.get("metrics", DEFAULT_CATALOG_METRICS):
             reason = "incompatible_metric"
         elif not any(name in dependencies for name in library) or not requirements <= dependencies.keys():
             reason = "missing_dependency"
@@ -235,7 +244,8 @@ def match_methods(facts, catalog, task_cards=(), *, local_dir=None):
             reason = "eligible"
         matches.append(MethodMatch(card["id"], card["version"], card["modality"], card["method"], card["source"],
                                    reason == "eligible", reason, 600, None, effective))
-    priority = {name: index for index, name in enumerate(BASELINE_ORDER)}
+    order = GPU_BASELINE_ORDER if capabilities.get("num_gpus", 0) > 0 else BASELINE_ORDER
+    priority = {name: index for index, name in enumerate(order)}
     return sorted(matches, key=lambda m: (priority.get(m.method_id, len(priority)), m.expected_seconds, m.key))
 
 

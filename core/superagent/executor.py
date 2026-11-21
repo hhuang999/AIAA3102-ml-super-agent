@@ -132,10 +132,21 @@ class _OutputCollector:
             pass
 
 
-def _kill_group(pgid: int, sig: int) -> None:
+_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+def _kill_group(pgid: int, sig: int, proc: subprocess.Popen[bytes] | None = None) -> None:
     try:
-        os.killpg(pgid, sig)
-    except (ProcessLookupError, PermissionError):
+        if hasattr(os, "killpg"):
+            os.killpg(pgid, sig)
+        elif proc is not None:
+            if sig == signal.SIGINT:
+                proc.terminate()
+            else:
+                proc.kill()
+        else:
+            os.kill(pgid, sig)
+    except (ProcessLookupError, PermissionError, OSError):
         pass
 
 
@@ -377,17 +388,17 @@ class Executor:
                 break
             time.sleep(POLL_SECONDS)
         if timed_out or cancelled:
-            _kill_group(pgid, signal.SIGINT)
+            _kill_group(pgid, signal.SIGINT, proc)
             deadline = time.monotonic() + TERMINATE_GRACE_SECONDS
             while proc.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.05)
-            _kill_group(pgid, signal.SIGKILL)
+            _kill_group(pgid, _SIGKILL, proc)
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:  # pragma: no cover
                 pass
         # Clean up any children the script left behind.
-        _kill_group(pgid, signal.SIGKILL)
+        _kill_group(pgid, _SIGKILL, proc)
         rt.join(timeout=5)
         exec_seconds = time.monotonic() - t0
         with self._lock:
@@ -412,7 +423,7 @@ class Executor:
         with self._lock:
             procs = list(self._procs.values())
         for p in procs:
-            _kill_group(p.pid, signal.SIGINT)
+            _kill_group(p.pid, signal.SIGINT, p)
         time.sleep(0.5)
         for p in procs:
-            _kill_group(p.pid, signal.SIGKILL)
+            _kill_group(p.pid, _SIGKILL, p)

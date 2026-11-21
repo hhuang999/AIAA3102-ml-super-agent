@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 import json
 import queue
+import re
 import time
 import logging
 import threading
@@ -46,9 +47,17 @@ def effect_label(
     score: float | None,
     parent_score: float | None,
     better: Callable[[float, float], bool],
+    *,
+    reference_score: float | None = None,
 ) -> int:
-    if kind in ("draft", "synthesis", "repair"):
+    if kind in ("draft", "synthesis"):
+        if score is None:
+            return 0
+        if reference_score is not None:
+            return 1 if (better(score, reference_score) or score == reference_score) else -1
         return 1
+    if kind == "repair":
+        return 1 if score is not None else -1
     if score is None or parent_score is None:
         return 0
     if better(score, parent_score):
@@ -58,8 +67,22 @@ def effect_label(
     return 0
 
 
+_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[\u4e00-\u9fff]")
+_CAMEL_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z][a-z]|\d|\b)|\d+")
+
+
 def tokenize(text: str) -> list[str]:
-    return text.lower().split()
+    tokens: list[str] = []
+    for raw in _TOKEN_RE.findall(text or ""):
+        low = raw.lower()
+        tokens.append(low)
+        if raw.isascii() and not raw.islower() and not raw.isupper() and not raw.isdigit():
+            parts = [p.lower() for p in _CAMEL_RE.findall(raw)]
+            if len(parts) > 1:
+                for p in parts:
+                    if p != low:
+                        tokens.append(p)
+    return tokens
 
 
 class BM25:
@@ -417,27 +440,67 @@ def decision_context(facts, proposal, store=None):
             parent.get("reason"),
         ) if isinstance(p, str) and p.strip()
     ).strip() or proposal.hypothesis
+    parent_trial = parent.get("trial_id")
     matching = [
         row for row in visible.values()
         if row["operation_id"] not in chosen
         and (row["split_id"], row["metric"]) == (parent["split_id"], parent["metric"])
-        and row.get("rung") == parent.get("rung")
+        and (row.get("rung") == parent.get("rung") or (parent_trial and row.get("trial_id") == parent_trial))
         and (
-            row["action"] == proposal.action
+            row.get("parent_id") == proposal.parent_id
+            or row["action"] == proposal.action
             or proposal.target and row.get("target") == proposal.target
             or parent.get("failed_stage") and row.get("failed_stage") == parent["failed_stage"]
         )
     ]
-    for subset in ([x for x in matching if (x.get("gain") or 0) > 0],
-                   [x for x in matching if x.get("gain") is not None and x["gain"] <= 0
-                    or parent.get("failed_stage") and x.get("failed_stage") == parent["failed_stage"]]):
-        if not subset:
-            continue
-        if store is not None and len(subset) > 1:
-            matches = store.search(query, 1, record_ids={x["operation_id"] for x in subset})
+    pos = [x for x in matching if (x.get("gain") or 0) > 0]
+    if pos:
+        picked_pos: list[str] = []
+        if store is not None and len(pos) > 1:
+            for r in store.search(query, 2, record_ids={x["operation_id"] for x in pos}):
+                if r.record_id not in picked_pos:
+                    picked_pos.append(r.record_id)
+        top_gain = max(pos, key=lambda x: (x["gain"], x["seq"]))["operation_id"]
+        if len(picked_pos) >= 2:
+            if top_gain not in picked_pos:
+                picked_pos = [picked_pos[0], top_gain]
         else:
-            matches = []
-        chosen.append(matches[0].record_id if matches else subset[-1]["operation_id"])
+            if top_gain not in picked_pos:
+                picked_pos.append(top_gain)
+            if len(picked_pos) < 2:
+                for x in sorted(pos, key=lambda r: (-r["gain"], -r["seq"])):
+                    if x["operation_id"] not in picked_pos:
+                        picked_pos.append(x["operation_id"])
+                        break
+        chosen.extend(picked_pos[:2])
+    neg = [
+        x for x in matching
+        if (x.get("gain") is not None and x["gain"] <= 0)
+        or (
+            x.get("status") == "failed"
+            and (
+                x.get("parent_id") == proposal.parent_id
+                or x.get("branch_id") == parent.get("branch_id")
+                or (parent.get("failed_stage") and x.get("failed_stage") == parent["failed_stage"])
+            )
+        )
+    ]
+    if neg:
+        picked_neg: list[str] = []
+        direct_bad = [x for x in neg if x.get("parent_id") == proposal.parent_id]
+        if direct_bad:
+            picked_neg.append(direct_bad[-1]["operation_id"])
+        if store is not None and len(neg) > 1:
+            for r in store.search(query, 2, record_ids={x["operation_id"] for x in neg}):
+                if r.record_id not in picked_neg and len(picked_neg) < 2:
+                    picked_neg.append(r.record_id)
+        if len(picked_neg) < 2:
+            for x in reversed(neg):
+                if x["operation_id"] not in picked_neg:
+                    picked_neg.append(x["operation_id"])
+                    if len(picked_neg) >= 2:
+                        break
+        chosen.extend(picked_neg[:2])
     fields = ("operation_id", "node_id", "parent_id", "action", "method", "hypothesis", "method_summary",
               "target", "seed", "rung", "score", "score_verified", "deliverable", "gain",
               "diagnostic", "reason", "failed_stage", "seconds")

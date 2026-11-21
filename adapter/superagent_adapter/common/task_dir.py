@@ -101,20 +101,22 @@ def check_isolation(task_dir: Path, private_dir: Path, test_file: str = "test.cs
     answer_ids: set[str] = set()
     for p in private_files:
         if p.suffix.lower() == ".csv":
-            df = pd.read_csv(p, dtype=str)
+            df = pd.read_csv(p, dtype=str, keep_default_na=False)
             answer_cols += [c for c in df.columns[1:]]
             answer_ids |= set(df.iloc[:, 0].astype(str))
     test_path = task_dir / "data" / test_file
     if test_path.is_file():
-        tcols = list(pd.read_csv(test_path, nrows=5).columns)
+        tcols = list(pd.read_csv(test_path, nrows=0, dtype=str, keep_default_na=False).columns)
         leaked = [c for c in tcols[1:] if c in answer_cols]
         if leaked:
             problems.append(f"public test file has answer columns {leaked}")
+    ans_set = set(answer_cols)
     for f in task_files:
         if f.suffix.lower() != ".csv" or f.name == SAMPLE_NAME:
             continue
-        df = pd.read_csv(f, dtype=str)
-        cols = set(df.columns)
-        if answer_cols and set(answer_cols) <= cols and answer_ids and answer_ids <= set(df.iloc[:, 0].astype(str)):
-            problems.append(f"{f} contains the answer columns for the test ids")
+        cols = set(pd.read_csv(f, nrows=0, dtype=str, keep_default_na=False).columns)
+        if ans_set and ans_set <= cols and answer_ids:
+            id_col = pd.read_csv(f, usecols=[0], dtype=str, keep_default_na=False).iloc[:, 0]
+            if answer_ids <= set(id_col.astype(str)):
+                problems.append(f"{f} contains the answer columns for the test ids")
     return IsolationReport(ok=not problems, problems=problems, files_checked=len(task_files))

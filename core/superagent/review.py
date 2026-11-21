@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import logging
 from dataclasses import dataclass
 
@@ -29,6 +30,40 @@ class ReviewOutcome:
     findings: str
 
 
+SENSITIVE_SYMBOLS = frozenset({
+    "predict_only", "load_data", "read_split", "split", "make_splits", "evaluate", "compute_metric",
+})
+_SENSITIVE_DIFF_RE = (
+    r"\b(train_test_split|StratifiedKFold|KFold|GroupKFold|TimeSeriesSplit|"
+    r"predict_only|val_predictions|val_labels|inference\.json|fit_transform|from_pretrained)\b"
+)
+
+
+def _changed_symbol_names(before: str, after: str) -> set[str]:
+    def sym_dumps(src: str) -> dict[str, str]:
+        tree = ast.parse(src)
+        out: dict[str, str] = {}
+
+        def walk(body, prefix=""):
+            for n in body:
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    name = prefix + n.name
+                    out[name] = ast.dump(n)
+                    if isinstance(n, ast.ClassDef):
+                        walk(n.body, name + ".")
+
+        walk(tree.body)
+        return out
+
+    try:
+        b = sym_dumps(before)
+        a = sym_dumps(after)
+    except SyntaxError:
+        return {"__syntax_error__"}
+    names = {k.rsplit(".", 1)[-1] for k in (set(b) ^ set(a)) | {k for k in (set(b) & set(a)) if b[k] != a[k]}}
+    return names
+
+
 def review(ctx: RunContext, node: Node) -> ReviewOutcome:
     rc = ctx.cfg["review"]
     if not rc["enabled"]:
@@ -43,7 +78,13 @@ def review(ctx: RunContext, node: Node) -> ReviewOutcome:
     if rc.get("mode")=="risk" and not high_risk:
         return ReviewOutcome(False,"pass","low-risk diff: deterministic execution and output checks")
     ledger=getattr(ctx.gateway,"ledger",None)
-    sensitive = re.search(r"split|fold|label|target|metric|predict|valid", changed, re.I)
+    changed_syms = _changed_symbol_names(node.parent.code, node.code) if node.parent and node.parent.code else set()
+    sensitive = (
+        node.kind in ("draft", "synthesis")
+        or not node.parent
+        or bool(re.search(_SENSITIVE_DIFF_RE, changed, re.I))
+        or bool(changed_syms & SENSITIVE_SYMBOLS)
+    )
     effort = rc["sensitive_effort"] if sensitive else None
     sig=fingerprint([ctx.task_desc,node.code,effort])
     saved=ledger.get(node.id,"review",sig) if ledger else None

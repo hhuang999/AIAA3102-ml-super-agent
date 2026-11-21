@@ -13,7 +13,7 @@ from .scheduling import attempts_since_branch_best
 from .selection import explore_weight
 from .utils import atomic_write_json, atomic_write_text, now_iso, read_jsonl
 
-OPERATORS = ("draft", "refine", "repair", "retrospect", "borrow", "synthesis")
+OPERATORS = ("draft", "refine", "repair", "retrospect", "borrow", "synthesis", "promote")
 PLAN_PREVIEW = 300
 EFFECTIVE_BRANCH_WINDOW = 10
 TRIGGERED_OPERATORS = ("retrospect", "borrow", "synthesis")

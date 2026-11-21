@@ -114,14 +114,16 @@ def _align(frames: list[pd.DataFrame], id_col: str | None) -> list[pd.DataFrame]
     out = [first.reset_index(drop=True)]
     for f in frames[1:]:
         aligned = None
-        if id_col is not None and id_col in f.columns and not f[id_col].duplicated().any():
-            try:
-                g = f.set_index(f[id_col].astype(str).str.strip())
-                keys = first[id_col].astype(str).str.strip()
-                if set(keys) <= set(g.index):
-                    aligned = g.loc[keys.tolist()].reset_index(drop=True)
-            except Exception:  # noqa: BLE001
-                aligned = None
+        if id_col is not None and id_col in f.columns:
+            idx = f[id_col].astype(str).str.strip()
+            if not idx.duplicated().any():
+                try:
+                    g = f.set_index(idx)
+                    keys = first[id_col].astype(str).str.strip()
+                    if set(keys) <= set(g.index):
+                        aligned = g.loc[keys.tolist()].reset_index(drop=True)
+                except Exception:  # noqa: BLE001
+                    aligned = None
         if aligned is None:
             aligned = f.reset_index(drop=True).reindex(range(len(first)))
         out.append(aligned)
@@ -191,11 +193,13 @@ def align(frames, id_col):
     out = [first.reset_index(drop=True)]
     for f in frames[1:]:
         aligned = None
-        if id_col is not None and id_col in f.columns and not f[id_col].duplicated().any():
-            g = f.set_index(f[id_col].astype(str).str.strip())
-            keys = first[id_col].astype(str).str.strip()
-            if set(keys) <= set(g.index):
-                aligned = g.loc[keys.tolist()].reset_index(drop=True)
+        if id_col is not None and id_col in f.columns:
+            idx = f[id_col].astype(str).str.strip()
+            if not idx.duplicated().any():
+                g = f.set_index(idx)
+                keys = first[id_col].astype(str).str.strip()
+                if set(keys) <= set(g.index):
+                    aligned = g.loc[keys.tolist()].reset_index(drop=True)
         if aligned is None:
             aligned = f.reset_index(drop=True).reindex(range(len(first)))
         out.append(aligned)

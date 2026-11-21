@@ -86,7 +86,7 @@ GPU_HABITS = """
 - GPU memory: start with a moderate batch size; on a CUDA out-of-memory error lower the batch size and use gradient accumulation. Before training another model in the same script, release the previous one (del model; torch.cuda.empty_cache())."""
 
 
-def implementation_rules(res: Resources, split_seed: int, val_fraction: float, *, declared_split=False) -> str:
+def implementation_rules(res: Resources, split_seed: int, val_fraction: float, *, declared_split=False, include_torch: bool = True) -> str:
     from ..helper_api import reference
     gpu_habits = GPU_HABITS if res.num_gpus > 0 else ""
     smoke_rule = smoke_mode_rule(res.smoke_seconds) if res.smoke_seconds > 0 else ""
@@ -112,6 +112,11 @@ def implementation_rules(res: Resources, split_seed: int, val_fraction: float, *
         if declared_split else
         "- Are val_predictions.csv and val_labels.csv written with the prediction file's columns?\n- Is the last printed line the score marker?"
     )
+    continuation_line = (
+        "Training continuation: use superagent.training.remaining_train_seconds() before each epoch to leave time for validation and full test predictions. Call restore_torch(model, optimizer, scheduler=...) before training and save_torch(..., epoch=..., next_seconds=..., delivery_seconds=...) after a resumable epoch. Save sampler/generator/scaler if used. Other frameworks use resume_path() and save_checkpoint(...). Always emit predictions at each rung. For a verified frozen extractor with deterministic preprocessing, superagent.features.frozen_features can cache features across rungs: bind split, ordered row_ids, weights_sha256, transform and extractor revision. Never reuse for random augmentations or changing weights."
+        if include_torch else
+        "Training continuation: use superagent.training.remaining_train_seconds() to leave time for validation and full test predictions. Iterative models can use resume_path() and save_checkpoint(...). Always emit predictions at each rung."
+    )
     return f"""## Implementation rules
 Resources:
 {_time_lines(res)}
@@ -119,7 +124,7 @@ Resources:
 - {RESOURCE_LINE[res.mode]}
 
 Hard requirements:
-{reference()}
+{reference(include_torch=include_torch)}
 1. Real inference. Every validation and test prediction must come from inference with the trained model. Never use constants, placeholders, random numbers or statistics as predictions. Never fake or simplify the metric function.
 2. Prediction file. Predict every test sample and write ./out/predictions.csv, formatted exactly like sample_predictions.csv (when present) and the task description.
 3. Model files. Save everything needed to predict again later into ./out/model/: model weights, fitted preprocessing objects (encoders, tokenizers, scalers, ...) and the label mapping.
@@ -136,7 +141,7 @@ Hard requirements:
 8. Task semantics. Local validation must evaluate the same task as the final prediction. Do not silently switch to an easier proxy task, and do not use a proxy metric as the main score.
 9. Validation files. {validation_files}
 {smoke_rule}
-Training continuation: use superagent.training.remaining_train_seconds() before each epoch to leave time for validation and full test predictions. Call restore_torch(model, optimizer, scheduler=...) before training and save_torch(..., epoch=..., next_seconds=..., delivery_seconds=...) after a resumable epoch. Save sampler/generator/scaler if used. Other frameworks use resume_path() and save_checkpoint(...). Always emit predictions at each rung. For a verified frozen extractor with deterministic preprocessing, superagent.features.frozen_features can cache features across rungs: bind split, ordered row_ids, weights_sha256, transform and extractor revision. Never reuse for random augmentations or changing weights.
+{continuation_line}
 Directories:
 - ./data: read-only input data. Never write there.
 - ./work: temporary files and caches. Deleted after the run.
