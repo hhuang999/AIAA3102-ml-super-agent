@@ -31,7 +31,7 @@ def _llm_usage(ctx: RunContext) -> dict[str, Any]:
         for role, status, payload in raw:
             usage = json.loads(payload) if payload else {}
             rows.append({"agent": role, "model": usage.get("model") or ctx.cfg["llm"]["generation"]["model"],
-                         "ok": status == "received", "prompt_tokens": usage.get("input_tokens"),
+                         "ok": status == "received", "status": status, "prompt_tokens": usage.get("input_tokens"),
                          "completion_tokens": usage.get("output_tokens"), "reasoning_tokens": usage.get("reasoning_tokens")})
     else:
         rows = read_jsonl(ctx.paths.llm_calls)
@@ -45,6 +45,7 @@ def _llm_usage(ctx: RunContext) -> dict[str, Any]:
     total["currency"] = ctx.cfg["llm"].get("currency", "")
     by_agent = defaultdict(empty)
     by_model = defaultdict(empty)
+    no_billing = {"not_sent", "rate_limited", "overloaded", "http_rejected"}
     for r in rows:
         usage = late.get(r.get("attempt_id"), r)
         for bucket in (total, by_agent[str(r.get("agent"))], by_model[str(r.get("model"))]):
@@ -55,8 +56,14 @@ def _llm_usage(ctx: RunContext) -> dict[str, Any]:
             bucket["completion_tokens"] += usage.get("completion_tokens") or 0
             bucket["reasoning_tokens"] += usage.get("reasoning_tokens") or 0
             bucket["cost"] += usage.get("cost") or 0.0
-            bucket["unknown_usage"] += (usage.get("prompt_tokens") is None or usage.get("completion_tokens") is None
-                                        if formal else usage.get("cost") is None)
+            if formal:
+                unknown = (
+                    r.get("status") not in no_billing
+                    and (usage.get("prompt_tokens") is None or usage.get("completion_tokens") is None)
+                )
+            else:
+                unknown = usage.get("cost") is None
+            bucket["unknown_usage"] += int(unknown)
     for bucket in [total, *by_agent.values(), *by_model.values()]:
         bucket["cost"] = None if formal else round(bucket["cost"], 6)
     if formal:

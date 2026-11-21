@@ -181,9 +181,9 @@ ROBUSTNESS_ADVICE = """## Robustness advice (suggestions, not hard requirements)
 - Prefer models that capture the intrinsic structure of the data over simply making the model bigger."""
 
 
-def environment_block(mode: str, rng: random.Random) -> str:
+def environment_block(mode: str, rng: random.Random | None = None) -> str:
+    # Keep deterministic package order so prompt prefix caching stays effective across calls.
     pkgs = [p for p in PACKAGES if not (mode == "off" and p in PRETRAINED_ONLY_PACKAGES)]
-    rng.shuffle(pkgs)
     return f"""## Environment
 - Installed packages include: {", ".join(pkgs)}.
 - PyTorch is recommended for neural networks.

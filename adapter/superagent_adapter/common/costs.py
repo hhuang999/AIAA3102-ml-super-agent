@@ -41,6 +41,7 @@ def recompute(core_out: Path, prices: Mapping[str, Any]) -> dict[str, Any]:
     """Cost per agent and model at ``prices``, next to the cost the Core recorded."""
     logs = Path(core_out) / "logs"
     models = prices.get("models", {})
+    aliases = prices.get("aliases", {})
     emb_prices = prices.get("embeddings", {})
     by_agent: dict[str, dict[str, float]] = defaultdict(lambda: {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0})
     missing: set[str] = set()
@@ -53,13 +54,28 @@ def recompute(core_out: Path, prices: Mapping[str, Any]) -> dict[str, Any]:
         pt, ct = int(r.get("prompt_tokens") or 0), int(r.get("completion_tokens") or 0)
         unknown += int(r.get("prompt_tokens") is None or r.get("completion_tokens") is None)
         recorded += float(r.get("cost") or 0.0)
-        price = models.get(str(r.get("model")))
+        returned_m = r.get("returned_model")
+        req_m = r.get("model")
+        price = None
+        for candidate in (returned_m, req_m):
+            if not candidate:
+                continue
+            resolved = aliases.get(str(candidate), str(candidate))
+            entry = models.get(resolved)
+            if isinstance(entry, dict):
+                price = entry
+                break
+            if isinstance(entry, list) and entry:
+                price = (_price_rows(prices, str(candidate), r["ts"]) if r.get("ts") else entry[-1]) or entry[-1]
+                break
         cost = 0.0
         if price is None:
             if pt or ct:
-                missing.add(str(r.get("model")))
+                missing.add(str(returned_m or req_m))
         else:
             hit = int(r.get("cached_tokens") or 0)
+            if hit < 0 or hit > pt:
+                hit = 0
             cost = ((pt-hit)*float(price["input_per_million"]) + hit*float(price.get("cached_input_per_million",price["input_per_million"])) + ct*float(price["output_per_million"]))/1e6
         b = by_agent[str(r.get("agent"))]
         b["calls"] += 1
@@ -156,6 +172,9 @@ def _attempt_cost(prices, model, at, usage):
     out = _decimal(price, "output_per_million")
     if total is not None and inp is not None and (inp == cache or total == 0):
         amount, input_complete = total * inp, True
+    elif total is not None and hit is None and miss is None and inp is not None and cache is not None:
+        # Cache hit/miss breakdown missing while prices differ: record the guaranteed lower bound and keep incomplete.
+        amount, input_complete = total * min(inp, cache), False
     else:
         amount = (hit * cache if hit is not None and cache is not None else Decimal(0))
         amount += miss * inp if miss is not None and inp is not None else Decimal(0)
@@ -169,9 +188,17 @@ def _receipts(core_output):
     db = Path(core_output) / "logs/operations.sqlite"
     if not db.is_file():
         return None
-    conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
+    uri = db.resolve().as_uri()
+    conn = None
     try:
-        conn.execute("BEGIN")
+        try:
+            conn = sqlite3.connect(uri + "?mode=ro", uri=True)
+            conn.execute("BEGIN")
+        except sqlite3.OperationalError:
+            if conn is not None:
+                conn.close()
+            conn = sqlite3.connect(uri + "?mode=ro&immutable=1", uri=True)
+            conn.execute("BEGIN")
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='view' AND name='api_usage_events_v1'").fetchone() is None:
             return None
         identities = conn.execute("SELECT run_id FROM api_usage_run_v1").fetchall()
@@ -181,7 +208,8 @@ def _receipts(core_output):
                             "FROM api_usage_events_v1 ORDER BY receipt_seq").fetchall()
         return identities[0][0], rows
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def read_usage(core_output, prices, cursor=None, process_exited=False):
@@ -230,13 +258,20 @@ def read_usage(core_output, prices, cursor=None, process_exited=False):
     usage = {"input_tokens_known": 0, "output_tokens_known": 0, "reasoning_tokens_known": 0}
     totals = defaultdict(Decimal)
     models_without_price = set()
+    no_billing_statuses = {"rate_limited", "overloaded", "http_rejected"}
     for row in attempts.values():
         finished = row.get("attempt_finished", {})
         receipt = row.get("usage_received", {})
         if finished.get("not_sent"):
             counts["not_sent"] += 1
             continue
-        model = receipt.get("model") or row["model"]
+        if not receipt and finished.get("status") in no_billing_statuses:
+            counts["settled"] += 1
+            continue
+        returned_model = receipt.get("model")
+        model = returned_model or row["model"]
+        if returned_model and _price_rows(prices, returned_model, row["started"]) is None and _price_rows(prices, row["model"], row["started"]) is not None:
+            model = row["model"]
         for field in usage:
             usage[field] += receipt.get(field.removesuffix("_known")) or 0
         currency, partial, fully_priced = _attempt_cost(prices, model, row["started"], receipt)

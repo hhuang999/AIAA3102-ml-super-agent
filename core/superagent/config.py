@@ -8,6 +8,7 @@ take precedence over both.
 from __future__ import annotations
 
 import copy
+import math
 import os
 from pathlib import Path
 from typing import Any, Mapping
@@ -101,12 +102,21 @@ def _check_value(path: tuple[str, ...], value: Any, default: Any) -> None:
         raise ConfigError(f"config key '{key}' must be one of {list(enum)}, got {value!r}")
 
 
+_ROLE_OPTIONAL_DEFAULTS: dict[str, Any] = {
+    "thinking": "",
+    "reasoning_effort": "",
+    "model": "",
+    "temperature": 0.0,
+    "recovery_max_output_tokens": 0,
+}
+
+
 def _merge(base: dict[str, Any], override: Mapping[str, Any], prefix: tuple[str, ...]) -> None:
     for k, v in override.items():
         path = prefix + (str(k),)
         # Optional role fields inherit their group settings until explicitly set.
-        if k not in base and len(prefix) == 3 and prefix[:2] == ("llm","role_policy") and k in ("thinking","reasoning_effort"):
-            base[k] = ""
+        if k not in base and len(prefix) == 3 and prefix[:2] == ("llm", "role_policy") and k in _ROLE_OPTIONAL_DEFAULTS:
+            base[k] = _ROLE_OPTIONAL_DEFAULTS[k]
         if k not in base:
             raise ConfigError(f"unknown config key '{'.'.join(path)}'")
         default = base[k]
@@ -174,7 +184,6 @@ def build_config(
     if runner not in ("legacy", "bubblewrap") or cfg["verification"]["timeout_seconds"] <= 0:
         raise ConfigError("verification requires legacy/bubblewrap and a positive timeout_seconds")
     if runner == "bubblewrap":
-        import math
         from urllib.parse import urlsplit
 
         if (
@@ -192,11 +201,14 @@ def build_config(
         cfg["review"]["enabled"] = True
         cfg["review"]["mode"] = "always"
         url = urlsplit(cfg["llm"]["base_url"])
-        if cfg["llm"]["base_url"].rstrip("/") != "https://api.deepseek.com" and (
+        base_clean = cfg["llm"]["base_url"].rstrip("/")
+        if base_clean not in ("https://api.deepseek.com", "https://api.deepseek.com/v1") and (
             url.scheme != "http" or url.hostname not in ("127.0.0.1", "::1", "localhost") or url.username or url.password
         ):
             raise ConfigError("single-model llm.base_url requires official DeepSeek HTTPS or a local fixture")
-        if any(cfg["llm"][group]["model"] != "deepseek-flash" for group in ("generation", "judgement")):
+        if any(cfg["llm"][group]["model"] != "deepseek-flash" for group in ("generation", "judgement")) or any(
+            policy.get("model") not in (None, "deepseek-flash") for policy in cfg["llm"]["role_policy"].values()
+        ):
             raise ConfigError("single-model runs use deepseek-flash")
         limits = cfg["llm"]["request_limits"]
         if any(not math.isfinite(n) or n <= 0 for n in limits.values()) or cfg["llm"]["max_in_flight"] < 0:
@@ -220,8 +232,16 @@ def build_config(
             raise ConfigError(f"invalid reasoning effort for {role}")
         if "thinking" in policy and policy["thinking"] not in ("enabled","disabled"):
             raise ConfigError(f"invalid thinking mode for {role}")
-    if cfg["llm"]["operation_extra_sends"]<0:
+        if "temperature" in policy and (not math.isfinite(policy["temperature"]) or not 0.0 <= policy["temperature"] <= 2.0):
+            raise ConfigError(f"invalid temperature for {role}")
+        if "model" in policy and not str(policy["model"]).strip():
+            raise ConfigError(f"invalid model for {role}")
+    if cfg["llm"]["operation_extra_sends"] < 0:
         raise ConfigError("operation_extra_sends must be nonnegative")
+    if cfg["llm"]["operation_rate_limit_retries"] < 0:
+        raise ConfigError("operation_rate_limit_retries must be nonnegative")
+    if cfg["llm"]["max_context_tokens"] < 1024:
+        raise ConfigError("max_context_tokens must be at least 1024")
     for path in POSITIVE_INT_KEYS:
         if get_path(cfg, path) < 1:
             raise ConfigError(f"config key '{'.'.join(path)}' must be at least 1")

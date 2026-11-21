@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
@@ -275,13 +276,20 @@ class Operations:
             if ctx.stop_event.is_set():
                 self._record(dispatch, None, {"failure_stage": dispatch.stage, "reason": "cancelled"}, "cancelled")
                 return
-            dispatch.resume_at = exc.resume_at
-            self._state(dispatch, "deferred", max(0, exc.resume_at - time.monotonic()))
+            now = time.monotonic()
+            remaining = max(0.0, exc.resume_at - now)
+            step = min(1.0, max(0.1, remaining * 0.1)) if remaining > 0 else 0.0
+            stagger = len(self.deferred) * step
+            jitter = ctx.rng.random() * (step * 0.5) if step > 0 else 0.0
+            dispatch.resume_at = exc.resume_at + stagger + jitter
+            self._state(dispatch, "deferred", max(0.0, dispatch.resume_at - now))
             self.deferred[dispatch.id] = dispatch
             return
         except (CancelledCall, Discarded):
             details, terminal = {"failure_stage": dispatch.stage, "reason": "cancelled"}, "cancelled"
-        except (LLMUnavailableError, StructuredOutputError, OSError, ValueError) as exc:
+        except (LLMUnavailableError, StructuredOutputError, OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+            if isinstance(exc, (RuntimeError, sqlite3.Error)):
+                log.warning("candidate %s failed with %s: %s", dispatch.id, type(exc).__name__, exc)
             node = dispatch.node
             details, terminal = {"failure_stage": dispatch.stage, "reason": str(exc)}, "failed"
             if node is not None:
@@ -326,8 +334,14 @@ class Operations:
                     self._complete(pending.pop(future), future)
                 local_jobs = sum(d.proposal.local for d in pending.values())
                 api_jobs = len(pending) - local_jobs
-                for dispatch in list(self.deferred.values()):
-                    if (dispatch.resume_at <= time.monotonic() or ctx.gateway.endpoint_failure) and api_jobs < api_slots:
+                ep_failure, ep_cooldown = (
+                    ctx.gateway._get_route_state()
+                    if hasattr(ctx.gateway, "_get_route_state")
+                    else (ctx.gateway.endpoint_failure, ctx.gateway.cooldown_until)
+                )
+                now = time.monotonic()
+                for dispatch in sorted(list(self.deferred.values()), key=lambda d: d.resume_at):
+                    if (max(dispatch.resume_at, ep_cooldown) <= now or ep_failure) and api_jobs < api_slots:
                         del self.deferred[dispatch.id]
                         pending[pool.submit(self._work, dispatch)] = dispatch
                         api_jobs += 1
@@ -336,7 +350,7 @@ class Operations:
                 for proposal in proposals:
                     if proposal.local and local_jobs >= parallel or not proposal.local and api_jobs >= api_slots:
                         continue
-                    if not proposal.local and time.monotonic() < ctx.gateway.cooldown_until:
+                    if not proposal.local and time.monotonic() < ep_cooldown:
                         continue
                     dispatch = self.claim(proposal, proposal.as_of_seq)
                     if dispatch is None:
@@ -352,14 +366,15 @@ class Operations:
                     api_jobs += int(not proposal.local)
                 ctx.active_tasks = len(pending) + len(self.deferred)
                 if not pending and not self.deferred:
-                    if proposals and time.monotonic() < ctx.gateway.cooldown_until:
-                        ctx.stop_event.wait(max(0, ctx.gateway.cooldown_until - time.monotonic()))
+                    if proposals and time.monotonic() < ep_cooldown:
+                        ctx.stop_event.wait(max(0, ep_cooldown - time.monotonic()))
                         continue
                     break
                 if pending:
                     wait(pending, timeout=.1, return_when=FIRST_COMPLETED)
                 else:
-                    ctx.stop_event.wait(max(0, min(d.resume_at for d in self.deferred.values()) - time.monotonic()))
+                    next_wake = max(min(d.resume_at for d in self.deferred.values()), ep_cooldown)
+                    ctx.stop_event.wait(max(0, next_wake - time.monotonic()))
             for future, dispatch in pending.items():
                 self._complete(dispatch, future)
             for dispatch in self.deferred.values():

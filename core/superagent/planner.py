@@ -180,7 +180,10 @@ def plan_experiment(ctx, dispatch, parent, evidence):
         f"Observations: {json.dumps(evidence, ensure_ascii=False)}\nSymbols: {', '.join(names)}\n"
         f"Source excerpt:\n{parent_excerpt}\n"
         "Use the exact Python symbol for each change. Use whole_script as the only target for a broad rewrite. "
-        "List separate changes when training and inference need separate edits. Cite the observation IDs used."
+        "List separate changes when training and inference need separate edits. Cite the observation IDs used.\n"
+        'Example JSON shape: {"schema_version": 1, "action": "refine", "evidence_ids": ["<op_id>"], '
+        '"hypothesis": "...", "changes": [{"id": "c1", "component": "model_def", "target": "build_model", '
+        '"edit": "...", "check": "..."}], "expected_observation": "...", "preserve": ["split", "submission schema"]}'
     )
 
     def check(plan, _last):

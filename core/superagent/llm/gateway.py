@@ -8,6 +8,8 @@ line per request to ``logs/llm_calls.jsonl``.
 from __future__ import annotations
 
 import json
+import math
+import random
 import threading
 from dataclasses import asdict
 from .ledger import CancelledCall, Ledger, DeferredCall, PermanentCall, fingerprint
@@ -41,9 +43,11 @@ ROLES: dict[str, tuple[str, str]] = {
 }
 
 ABORT_POLL_SECONDS = 0.5
-# A confirmed reasoning-only exhaustion can recover with a lower effort.
-LOWER_EFFORT = {"max": "high", "high": "low"}
+# A confirmed reasoning-only exhaustion can recover with a lower effort (down to disabling thinking).
+LOWER_EFFORT = {"max": "high", "high": "low", "low": "off"}
 NON_RETRYABLE_STATUS = frozenset({400, 401, 402, 403, 404, 422})
+NO_BILLING_HTTP_STATUS = frozenset({400, 401, 402, 403, 404, 422, 429, 503})
+DEFAULT_MAX_CONTEXT_TOKENS = 1_000_000
 # Roles that assess an already finished run; they may keep working into the finalize reserve.
 ASSESSMENT_ROLES = frozenset({"result_reader", "leak_checker", "format_fixer"})
 
@@ -95,13 +99,50 @@ def _usage_dict(value: Any) -> dict:
     return dict(value) if hasattr(value, "model_dump") else {}
 
 
+class _SSEErrorFrame(ValueError):
+    """Explicit error payload received inside an HTTP 200 SSE stream."""
+
+
+def _backoff_delay(base_delay: float, streak: int, retry_after: float = 0.0, cap: float = 60.0) -> float:
+    if retry_after > 0 and math.isfinite(retry_after):
+        return float(retry_after)
+    if base_delay <= 0 or not math.isfinite(base_delay):
+        return 0.0
+    exp = min(cap, base_delay * (2 ** min(max(0, streak), 6)))
+    return exp * random.uniform(0.75, 1.25)
+
+
+def _is_reasoning_exhausted(resp: TransportResponse, thinking: bool) -> bool:
+    """True when thinking consumed the output budget with no visible content."""
+    return (
+        not resp.content.strip()
+        and resp.finish_reason == "length"
+        and thinking
+        and (
+            resp.reasoning_tokens is None
+            or resp.completion_tokens is None
+            or resp.reasoning_tokens > 0
+        )
+    )
+
+
 class OpenAITransport:
     """Sends chat completion requests to an OpenAI-compatible endpoint."""
 
     def __init__(self, base_url: str, api_key: str, timeout: float) -> None:
+        import httpx
         from openai import OpenAI
 
-        self._client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=0)
+        self._base_url = str(base_url)
+        timeout_cfg = httpx.Timeout(
+            timeout,
+            connect=min(float(timeout), 10.0),
+            pool=min(float(timeout), 30.0),
+        )
+        self._client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout_cfg, max_retries=0)
+
+    def close(self) -> None:
+        self._client.close()
 
     def __call__(self, request: Mapping[str, Any]) -> TransportResponse:
         import openai
@@ -111,12 +152,17 @@ class OpenAITransport:
             "model": request["model"],
             "messages": request["messages"],
             "max_tokens": request["max_tokens"],
-            "temperature": request["temperature"],
         }
-        extra: dict[str, Any] = {"thinking": {"type": "enabled" if request["thinking"] else "disabled"}}
+        if not request["thinking"]:
+            kwargs["temperature"] = request["temperature"]
+        is_deepseek = "deepseek" in self._base_url.lower() or "deepseek" in str(request["model"]).lower()
+        extra: dict[str, Any] = {}
+        if request["thinking"] or is_deepseek:
+            extra["thinking"] = {"type": "enabled" if request["thinking"] else "disabled"}
         if request["thinking"] and request.get("reasoning_effort"):
             extra["reasoning_effort"] = request["reasoning_effort"]
-        kwargs["extra_body"] = extra
+        if extra:
+            kwargs["extra_body"] = extra
         if request.get("json_mode"):
             kwargs["response_format"] = {"type": "json_object"}
         stream = request.get("stream", False)
@@ -124,83 +170,110 @@ class OpenAITransport:
         start = time.monotonic()
         first_content = None
         first_reasoning = None
+        on_stream_open = request.get("on_stream_open")
         try:
             if stream:
-                kwargs.update(stream=True,stream_options={"include_usage":True})
-                done=False
+                kwargs["stream"] = True
+                if request.get("stream_include_usage", True):
+                    kwargs["stream_options"] = {"include_usage": True}
+                done = False
                 with self._client.chat.completions.with_streaming_response.create(**kwargs) as response:
-                    for line in response.iter_lines():
-                        if request.get("cancel") and request["cancel"].is_set():
-                            break
-                        if not line.startswith("data:"):
-                            continue
-                        data=line[5:].strip()
-                        if data=="[DONE]":
-                            done=True
-                            break
-                        chunk=json.loads(data)
-                        if not isinstance(chunk, dict) or chunk.get("error"):
-                            raise ValueError("malformed or error SSE frame")
-                        if first is None:
-                            first=time.monotonic()-start
-                        rid=chunk.get("id") or rid
-                        model=chunk.get("model") or model
-                        new_usage = chunk.get("usage")
-                        choices = chunk.get("choices", [])
-                        if new_usage is not None and not isinstance(new_usage,dict) or not isinstance(choices,list):
-                            raise ValueError("invalid SSE usage or choices")
-                        usage = new_usage or usage
-                        for ch in choices:
-                            if not isinstance(ch,dict) or not isinstance(ch.get("delta",{}),dict):
-                                raise ValueError("invalid SSE choice")
-                            delta = ch.get("delta", {})
-                            if first_reasoning is None and delta.get("reasoning_content"):
-                                first_reasoning = time.monotonic() - start
-                            fragment = delta.get("content")
-                            if fragment is not None and not isinstance(fragment,str):
-                                raise ValueError("invalid SSE content")
-                            if fragment and first_content is None:
-                                first_content = time.monotonic()-start
-                            if fragment:
-                                text.append(fragment)
-                            reason=ch.get("finish_reason") or reason
+                    if on_stream_open is not None:
+                        on_stream_open(response.close)
+                    try:
+                        for line in response.iter_lines():
+                            if request.get("cancel") and request["cancel"].is_set():
+                                break
+                            if not line.startswith("data:"):
+                                continue
+                            data = line[5:].strip()
+                            if data == "[DONE]":
+                                done = True
+                                break
+                            chunk = json.loads(data)
+                            if not isinstance(chunk, dict):
+                                raise ValueError("malformed SSE frame")
+                            if chunk.get("error"):
+                                raise _SSEErrorFrame(f"error SSE frame: {chunk['error']}")
+                            if first is None:
+                                first = time.monotonic() - start
+                            rid = chunk.get("id") or rid
+                            model = chunk.get("model") or model
+                            new_usage = chunk.get("usage")
+                            choices = chunk.get("choices", [])
+                            if new_usage is not None and not isinstance(new_usage, dict) or not isinstance(choices, list):
+                                raise ValueError("invalid SSE usage or choices")
+                            usage = new_usage or usage
+                            for ch in choices:
+                                if not isinstance(ch, dict) or not isinstance(ch.get("delta", {}), dict):
+                                    raise ValueError("invalid SSE choice")
+                                delta = ch.get("delta", {})
+                                if first_reasoning is None and delta.get("reasoning_content"):
+                                    first_reasoning = time.monotonic() - start
+                                fragment = delta.get("content")
+                                if fragment is not None and not isinstance(fragment, str):
+                                    raise ValueError("invalid SSE content")
+                                if fragment and first_content is None:
+                                    first_content = time.monotonic() - start
+                                if fragment:
+                                    text.append(fragment)
+                                reason = ch.get("finish_reason") or reason
+                    finally:
+                        if on_stream_open is not None:
+                            on_stream_open(None)
                 if not done or not reason:
-                    reason="interrupted"
+                    reason = "interrupted"
             else:
                 from openai.types.chat import ChatCompletion
 
-                resp=self._client.chat.completions.create(**kwargs)
+                resp = self._client.chat.completions.create(**kwargs)
                 if not isinstance(resp, ChatCompletion) or not isinstance(resp.choices, list):
                     raise ValueError("invalid chat completion")
-                rid,model=resp.id,resp.model
-                usage=_usage_dict(resp.usage)
+                rid, model = resp.id, resp.model
+                usage = _usage_dict(resp.usage)
                 if resp.choices:
-                    ch=resp.choices[0]
+                    ch = resp.choices[0]
                     fragment = getattr(getattr(ch, "message", None), "content", None)
                     if fragment is not None and not isinstance(fragment, str):
                         raise ValueError("invalid chat completion content")
                     text.append(fragment or "")
-                    reason=getattr(ch, "finish_reason", None)
+                    reason = getattr(ch, "finish_reason", None)
         except openai.APIStatusError as exc:
-            error=FatalAPIError if exc.status_code in NON_RETRYABLE_STATUS else TransientAPIError
-            err=error(f"HTTP {exc.status_code}: {exc.message}")
-            err.status=exc.status_code
-            hint=exc.response.headers.get("retry-after")
-            if not hint and isinstance(exc.body,dict):
-                hint=exc.body.get("retry_after")
+            error = FatalAPIError if exc.status_code in NON_RETRYABLE_STATUS else TransientAPIError
+            err = error(f"HTTP {exc.status_code}: {exc.message}")
+            err.status = exc.status_code
+            hint = exc.response.headers.get("retry-after")
+            if not hint and isinstance(exc.body, dict):
+                hint = exc.body.get("retry_after")
+            if not hint:
+                try:
+                    raw_body = exc.response.json()
+                    if isinstance(raw_body, dict):
+                        hint = raw_body.get("retry_after") or (
+                            raw_body.get("error").get("retry_after")
+                            if isinstance(raw_body.get("error"), dict)
+                            else None
+                        )
+                except Exception:  # noqa: BLE001
+                    hint = None
             try:
-                err.retry_after=max(0,float(hint or 0))
-            except (ValueError,TypeError):
+                delay = float(hint or 0)
+                err.retry_after = max(0.0, delay) if math.isfinite(delay) else 0.0
+            except (ValueError, TypeError):
                 from email.utils import parsedate_to_datetime
                 try:
-                    err.retry_after=max(0,parsedate_to_datetime(hint).timestamp()-time.time())
-                except (ValueError,TypeError,OverflowError):
-                    err.retry_after=0
+                    err.retry_after = max(0.0, parsedate_to_datetime(hint).timestamp() - time.time())
+                except (ValueError, TypeError, OverflowError):
+                    err.retry_after = 0.0
             raise err from exc
-        except (openai.APIError,httpx.TransportError,ValueError,OSError) as exc:
-            if not text and not usage:
-                raise TransientAPIError(type(exc).__name__) from exc
-            reason="interrupted"
+        except (openai.APIError, httpx.TransportError, ValueError, OSError) as exc:
+            if isinstance(exc, _SSEErrorFrame) or (not text and not usage):
+                err = TransientAPIError(f"{type(exc).__name__}: {str(exc)[:200]}")
+                cause = exc.__cause__ if isinstance(exc, openai.APIConnectionError) else exc
+                if isinstance(cause, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)):
+                    err.not_sent = True
+                raise err from exc
+            reason = "interrupted"
         prompt = _token_count(usage.get("prompt_tokens"))
         completion = _token_count(usage.get("completion_tokens"))
         reasoning = _token_count(_usage_dict(usage.get("completion_tokens_details")).get("reasoning_tokens"))
@@ -209,7 +282,7 @@ class OpenAITransport:
             cached = _token_count(_usage_dict(usage.get("prompt_tokens_details")).get("cached_tokens"))
         if cached is not None and prompt is not None and cached > prompt:
             cached = None
-        return TransportResponse("".join(text),reason,prompt,completion,reasoning,cached,rid,model,first,first_content,
+        return TransportResponse("".join(text), reason, prompt, completion, reasoning, cached, rid, model, first, first_content,
                                  first_reasoning)
 
 
@@ -252,9 +325,19 @@ class LLMGateway:
         self.should_abort = should_abort or (lambda role: False)
         self.prompt_log_dir = prompt_log_dir
         self._sleep = sleep
-        self.ledger = Ledger(self.calls_log_path.with_name("operations.sqlite"),int(llm_cfg.get("operation_extra_sends",2)), run_id=run_id) if self.calls_log_path else None
+        self.ledger = (
+            Ledger(
+                self.calls_log_path.with_name("operations.sqlite"),
+                int(llm_cfg.get("operation_extra_sends", 2)),
+                run_id=run_id,
+                rate_limit_retries=int(llm_cfg.get("operation_rate_limit_retries", 8)),
+            )
+            if self.calls_log_path
+            else None
+        )
         self.formal = run_id is not None
         self.cooldown_until = 0.0
+        self._cooldown_streak = 0
         self.endpoint_failure = None
         self._lock = threading.Lock()
         self.totals: dict[str, float] = {"calls": 0, "failed_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0}
@@ -274,10 +357,36 @@ class LLMGateway:
             cost -= resp.cached_tokens*(group["input_price_per_million"]-group.get("cached_input_price_per_million",group["input_price_per_million"]))/1e6
         return cost
 
+    def _record_cooldown(self, status: int, retry_after: float = 0.0) -> tuple[float, float]:
+        with self._lock:
+            self._cooldown_streak += 1
+            streak = self._cooldown_streak
+            if retry_after > 0 and math.isfinite(retry_after):
+                cool = float(retry_after)
+            elif status == 524:
+                cool = 120.0
+            else:
+                base = float(self.cfg.get("api_retry_delay_seconds", 3))
+                cool = _backoff_delay(base if base > 0 else 3.0, streak - 1, cap=60.0)
+            self.cooldown_until = max(self.cooldown_until, time.monotonic() + cool)
+            return self.cooldown_until, cool
+
+    def _reset_cooldown_streak(self) -> None:
+        with self._lock:
+            self._cooldown_streak = 0
+
+    def _get_route_state(self) -> tuple[str | None, float]:
+        with self._lock:
+            return self.endpoint_failure, self.cooldown_until
+
+    def _set_endpoint_failure(self, message: str) -> None:
+        with self._lock:
+            self.endpoint_failure = message
+
     def _log(self, row: dict[str, Any]) -> None:
         with self._lock:
             self.totals["calls"] += 1
-            if row.get("cost") is None:
+            if not self.formal and row.get("cost") is None:
                 self.totals["unknown_cost_attempts"]=self.totals.get("unknown_cost_attempts",0)+1
             if not row["ok"]:
                 self.totals["failed_calls"] += 1
@@ -303,6 +412,19 @@ class LLMGateway:
         result: dict[str, Any] = {}
         done = threading.Event()
         guard = threading.Lock()
+        cancel = threading.Event()
+        closer: list[Callable[[], None] | None] = [None]
+
+        def on_stream_open(close_fn: Callable[[], None] | None) -> None:
+            should_close = False
+            with guard:
+                closer[0] = close_fn
+                should_close = cancel.is_set() and close_fn is not None
+            if should_close and close_fn is not None:
+                try:
+                    close_fn()
+                except Exception:  # noqa: BLE001
+                    pass
 
         def work() -> None:
             try:
@@ -311,21 +433,28 @@ class LLMGateway:
                 result["error"] = exc
             finally:
                 with guard:
+                    closer[0] = None
                     late = cancel.is_set()
                     done.set()
                 if late and on_late is not None and "value" in result:
                     on_late(result["value"])
 
-        cancel=threading.Event()
-        request={**request,"cancel":cancel}
+        request = {**request, "cancel": cancel, "on_stream_open": on_stream_open}
         t = threading.Thread(target=work, daemon=True)
         t.start()
         while not done.wait(ABORT_POLL_SECONDS):
             if self.should_abort(str(request.get("role", ""))):
+                close_fn = None
                 with guard:
                     if done.is_set():
                         break
                     cancel.set()
+                    close_fn = closer[0]
+                if close_fn is not None:
+                    try:
+                        close_fn()
+                    except Exception:  # noqa: BLE001
+                        pass
                 raise LLMUnavailableError("abandoned: deadline reached during generation")
         if "error" in result:
             raise result["error"]
@@ -359,16 +488,21 @@ class LLMGateway:
         request["stream"] = bool(self.cfg.get("stream",False))
         if self.formal:
             return self._formal_request_once(request, node_id, call_id, attempt_counter)
-        max_retries = min(1,int(self.cfg.get("api_max_retries", 1)))
+        max_ctx = int(group.get("max_context_tokens", self.cfg.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)))
+        prompt_bytes = sum(len(m["content"].encode()) for m in request["messages"])
+        if max_ctx > 0 and prompt_bytes + request["max_tokens"] + 256 > max_ctx:
+            raise PermanentCall("required_context_too_large")
+        max_retries = max(0, int(self.cfg.get("api_max_retries", 1)))
         delay = float(self.cfg.get("api_retry_delay_seconds", 3))
         api_failures = 0
         while True:
             if self.should_abort(role):
                 raise LLMUnavailableError("deadline reached")
-            if self.endpoint_failure:
-                raise LLMUnavailableError(self.endpoint_failure)
-            if time.monotonic()<self.cooldown_until:
-                raise DeferredCall("endpoint cooling down")
+            failure, cooldown = self._get_route_state()
+            if failure:
+                raise LLMUnavailableError(failure)
+            if time.monotonic() < cooldown:
+                raise DeferredCall("endpoint cooling down", cooldown)
             sig = fingerprint(request)
             # UTF-8 bytes give a conservative input allowance for these text prompts.
             reserve = call_cost(group, sum(len(m["content"].encode())+32 for m in request["messages"]),request["max_tokens"])
@@ -409,28 +543,42 @@ class LLMGateway:
                     append_jsonl(self.calls_log_path.with_name("late_usage.jsonl"),row)
                 resp = self._call_transport(request,on_late=reconcile)
             except (TransientAPIError, FatalAPIError) as exc:
+                status = getattr(exc, "status", None)
+                not_sent = bool(getattr(exc, "not_sent", False))
+                if not_sent:
+                    l_status, l_cost = "not_sent", 0.0
+                elif status == 429:
+                    l_status, l_cost = "rate_limited", 0.0
+                elif status == 503:
+                    l_status, l_cost = "overloaded", 0.0
+                elif status in NO_BILLING_HTTP_STATUS:
+                    l_status, l_cost = "http_rejected", 0.0
+                else:
+                    l_status, l_cost = "transport_error", None
                 if self.ledger:
-                    self.ledger.finish(attempt_id,None,None,"transport_error")
+                    self.ledger.finish(attempt_id, l_cost, None, l_status)
                 self._log({**base_row, "prompt_tokens": None, "completion_tokens": None, "reasoning_tokens": None,
                            "latency_secs": round(time.monotonic() - t0, 3), "ok": False, "error": str(exc)[:300],
-                           "cost": None, "http_status": getattr(exc,"status",None)})
+                           "cost": None, "http_status": status})
                 if isinstance(exc, FatalAPIError):
-                    if getattr(exc,"status",None) in (401,402,403):
-                        self.endpoint_failure=str(exc)
+                    if status in (401, 402, 403):
+                        self._set_endpoint_failure(str(exc))
                     raise PermanentCall(str(exc)) from exc
-                status=getattr(exc,"status",None)
-                if status in (524,429):
-                    cool=getattr(exc,"retry_after",0) or (120 if status==524 else 3)
-                    self.cooldown_until=max(self.cooldown_until,time.monotonic()+cool)
-                    raise DeferredCall(f"HTTP {status}; cool down {cool:g}s") from exc
+                if status in (524, 429):
+                    resume_at, cool = self._record_cooldown(status, getattr(exc, "retry_after", 0.0))
+                    raise DeferredCall(f"HTTP {status}; cool down {cool:g}s", resume_at) from exc
                 api_failures += 1
                 if api_failures > max_retries:
+                    if status == 503:
+                        resume_at, cool = self._record_cooldown(503, getattr(exc, "retry_after", 0.0))
+                        raise DeferredCall(f"HTTP 503; cool down {cool:g}s", resume_at) from exc
                     raise LLMUnavailableError(f"LLM unavailable after {max_retries} retries: {exc}") from exc
+                wait_s = _backoff_delay(delay, api_failures - 1, getattr(exc, "retry_after", 0.0))
                 waited = 0.0
-                while waited < delay:
+                while waited < wait_s:
                     if self.should_abort(role):
                         raise LLMUnavailableError("deadline reached while waiting to retry") from exc
-                    step = min(ABORT_POLL_SECONDS, delay - waited)
+                    step = min(ABORT_POLL_SECONDS, wait_s - waited)
                     self._sleep(step)
                     waited += step
                 continue
@@ -450,6 +598,7 @@ class LLMGateway:
                 self._log({**base_row, "latency_secs": round(time.monotonic() - t0, 3),
                            "ok": False, "error": type(exc).__name__, "cost": None})
                 raise
+            self._reset_cooldown_streak()
             resp_row = {
                 **base_row,
                 "prompt_tokens": resp.prompt_tokens,
@@ -471,71 +620,113 @@ class LLMGateway:
 
     def _formal_request_once(self, request, operation, call_id, counter):
         role = request["role"]
+        group = self._group(role)
         ledger = self.ledger
         assert ledger is not None
         signature = fingerprint(request)
         prompt_bytes = sum(len(m["content"].encode()) for m in request["messages"])
+        max_ctx = int(group.get("max_context_tokens", self.cfg.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)))
         # UTF-8 byte length is an upper bound for these text prompts.
-        if prompt_bytes + request["max_tokens"] + 256 > 1_048_576:
+        if max_ctx > 0 and prompt_bytes + request["max_tokens"] + 256 > max_ctx:
             raise PermanentCall("required_context_too_large")
-        network_retried = False
+        max_retries = max(0, int(self.cfg.get("api_max_retries", 1)))
+        delay = float(self.cfg.get("api_retry_delay_seconds", 3))
+        api_failures = 0
         while True:
             if self.should_abort(role):
                 raise CancelledCall("cancelled")
-            if self.endpoint_failure:
-                raise PermanentCall(self.endpoint_failure)
-            if time.monotonic() < self.cooldown_until:
-                raise DeferredCall("endpoint_cooldown", self.cooldown_until)
+            failure, cooldown = self._get_route_state()
+            if failure:
+                raise PermanentCall(failure)
+            if time.monotonic() < cooldown:
+                raise DeferredCall("endpoint_cooldown", cooldown)
             attempt = None
+            attempt_num = 0
+            t0 = time.monotonic()
 
             def begin():
-                nonlocal attempt
+                nonlocal attempt, attempt_num
                 if self.should_abort(role):
                     raise CancelledCall("cancelled")
-                if self.endpoint_failure:
-                    raise PermanentCall(self.endpoint_failure)
-                if time.monotonic() < self.cooldown_until:
-                    raise DeferredCall("endpoint_cooldown", self.cooldown_until)
+                ep_fail, ep_cool = self._get_route_state()
+                if ep_fail:
+                    raise PermanentCall(ep_fail)
+                if time.monotonic() < ep_cool:
+                    raise DeferredCall("endpoint_cooldown", ep_cool)
                 attempt = ledger.begin_request(operation, role, call_id, signature, request)
                 counter[0] += 1
+                attempt_num = counter[0]
+                self._log_prompt(operation, role, attempt_num, request["messages"])
                 return attempt
+
+            def make_row():
+                return {
+                    "ts": now_iso(), "attempt_id": attempt, "operation_id": operation, "fingerprint": signature,
+                    "endpoint": self.cfg.get("base_url"), "currency": self.cfg.get("currency"),
+                    "stream": request["stream"], "json_mode": request["json_mode"],
+                    "temperature": request["temperature"],
+                    "prompt_chars": sum(len(m["content"]) for m in request["messages"]),
+                    "prompt_bytes": prompt_bytes, "call_id": call_id, "attempt": attempt_num or counter[0],
+                    "agent": role, "node_id": operation, "model": request["model"],
+                    "thinking": request["thinking"], "reasoning_effort": request["reasoning_effort"],
+                    "max_tokens": request["max_tokens"],
+                    "latency_secs": round(time.monotonic() - t0, 3),
+                }
 
             try:
                 resp = self.transport.invoke(request, lambda: self.should_abort(role), begin, ledger.receive_usage, ledger.finish_request)
             except FatalAPIError as exc:
-                if getattr(exc, "status", None) in (401, 402, 403) or str(exc) == "missing_api_credential":
-                    self.endpoint_failure = str(exc)
+                status = getattr(exc, "status", None)
+                self._log({**make_row(), "prompt_tokens": None, "completion_tokens": None, "reasoning_tokens": None,
+                           "ok": False, "error": str(exc)[:300], "cost": None, "http_status": status})
+                if status in (401, 402, 403) or str(exc) == "missing_api_credential":
+                    self._set_endpoint_failure(str(exc))
                 raise PermanentCall(str(exc)) from exc
             except TransientAPIError as exc:
                 status = getattr(exc, "status", None)
+                self._log({**make_row(), "prompt_tokens": None, "completion_tokens": None, "reasoning_tokens": None,
+                           "ok": False, "error": str(exc)[:300], "cost": None, "http_status": status})
                 if status in (429, 524):
-                    delay = getattr(exc, "retry_after", None) or (120 if status == 524 else 3)
-                    with self._lock:
-                        self.cooldown_until = max(self.cooldown_until, time.monotonic() + delay)
-                    raise DeferredCall(f"http_{status}", self.cooldown_until) from exc
-                if network_retried or not self.cfg.get("api_max_retries"):
-                    raise PermanentCall(str(exc)) from exc
-                network_retried = True
-                deadline = time.monotonic() + self.cfg["api_retry_delay_seconds"]
-                while time.monotonic() < deadline:
-                    if self.should_abort(role):
-                        raise CancelledCall("cancelled") from exc
-                    self._sleep(min(.1, deadline - time.monotonic()))
-                continue
+                    resume_at, _cool = self._record_cooldown(status, getattr(exc, "retry_after", 0.0))
+                    raise DeferredCall(f"http_{status}", resume_at) from exc
+                if api_failures < max_retries:
+                    api_failures += 1
+                    wait_s = _backoff_delay(delay, api_failures - 1, getattr(exc, "retry_after", 0.0))
+                    deadline = time.monotonic() + wait_s
+                    while time.monotonic() < deadline:
+                        if self.should_abort(role):
+                            raise CancelledCall("cancelled") from exc
+                        self._sleep(min(.1, deadline - time.monotonic()))
+                    continue
+                if status == 503:
+                    resume_at, _cool = self._record_cooldown(503, getattr(exc, "retry_after", 0.0))
+                    raise DeferredCall("http_503", resume_at) from exc
+                raise LLMUnavailableError(f"LLM unavailable after {max_retries} retries: {exc}") from exc
+            except CancelledCall:
+                if attempt is not None:
+                    self._log({**make_row(), "prompt_tokens": None, "completion_tokens": None, "reasoning_tokens": None,
+                               "ok": False, "error": "cancelled", "cost": None})
+                raise
+            self._reset_cooldown_streak()
             if not resp.transport_complete:
                 resp.finish_reason = "model_idle_timeout" if resp.finish_reason == "model_idle_timeout" else "no_transport_terminator"
             if resp.finish_reason in ("content_filter", "tool_calls"):
+                self._log({**make_row(), "prompt_tokens": resp.prompt_tokens, "completion_tokens": resp.completion_tokens,
+                           "reasoning_tokens": resp.reasoning_tokens, "cached_tokens": resp.cached_tokens,
+                           "finish_reason": resp.finish_reason, "provider_id": resp.provider_id,
+                           "returned_model": resp.returned_model, "ttft_s": resp.ttft_s,
+                           "first_content_s": resp.first_content_s, "first_reasoning_s": resp.first_reasoning_s,
+                           "ok": False, "error": resp.finish_reason, "cost": None})
                 raise PermanentCall(resp.finish_reason)
             resp._log_row = {
-                "ts": now_iso(), "attempt_id": attempt, "operation_id": operation, "call_id": call_id,
-                "agent": role, "node_id": operation, "model": request["model"],
-                "thinking": request["thinking"], "reasoning_effort": request["reasoning_effort"],
-                "max_tokens": request["max_tokens"], "prompt_bytes": prompt_bytes,
+                **make_row(),
                 "prompt_tokens": resp.prompt_tokens, "completion_tokens": resp.completion_tokens,
+                "reasoning_tokens": resp.reasoning_tokens, "cached_tokens": resp.cached_tokens,
                 "finish_reason": resp.finish_reason, "provider_id": resp.provider_id,
-                "returned_model": resp.returned_model, "cost": None,
+                "returned_model": resp.returned_model, "ttft_s": resp.ttft_s,
+                "first_content_s": resp.first_content_s, "first_reasoning_s": resp.first_reasoning_s,
+                "cost": None,
             }
-            self._log_prompt(operation, role, counter[0], request["messages"])
             return resp
 
     # ------------------------------------------------------------------ public API
@@ -549,6 +740,8 @@ class LLMGateway:
         group = self._group(role)
         if not self.cfg.get("lower_effort_on_truncation", True):
             return None
+        if current == "off":
+            return None
         if current is None and group.get("thinking") != "enabled":
             return None
         return LOWER_EFFORT.get(str(current or group.get("reasoning_effort")))
@@ -557,7 +750,7 @@ class LLMGateway:
         """Plain text call. A reply cut off by the length limit is returned with ``truncated``.
 
         An empty reply cut off by the limit (the reasoning used the whole output budget) is retried
-        once with a lower reasoning effort.
+        with progressively lower reasoning effort down to disabling thinking.
         """
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         ledger = self.ledger if node_id else None
@@ -573,10 +766,11 @@ class LLMGateway:
             row = resp._log_row  # type: ignore[attr-defined]
             ok = bool(resp.content.strip())
             lower = None
-            if not ok and resp.finish_reason == "length" and effort is None and row["thinking"] and self.cfg.get("lower_effort_on_truncation", True):
-                all_reasoning = resp.completion_tokens and resp.reasoning_tokens == resp.completion_tokens
-                if all_reasoning:
-                    lower = "off" if role in ("patch_coder","repair_coder") else self._lower_effort(role, effort)
+            if _is_reasoning_exhausted(resp, bool(row["thinking"])) and self.cfg.get("lower_effort_on_truncation", True):
+                if role in ("patch_coder", "repair_coder") and effort is None:
+                    lower = "off"
+                else:
+                    lower = self._lower_effort(role, effort)
             error = None if ok else ("empty_response; retrying with reasoning effort " + lower if lower else "empty_response")
             self._log({**row, "ok": ok and not truncated, "has_content": ok, "error": error or (resp.finish_reason if truncated else None)})
             if lower is None:
@@ -616,20 +810,27 @@ class LLMGateway:
         feedback = saved["feedback"] if saved else ""
         last_errors: list[str] = []
         effort = saved["effort"] if saved else initial_effort
+        current_expanded = saved.get("expanded", expanded) if saved else expanded
         for i in range(saved["index"] if saved else 0, attempts):
             is_last = i == attempts - 1
             content = base_user if not feedback else base_user + "\n\n" + feedback
             messages = [{"role": "system", "content": system}, {"role": "user", "content": content}]
-            resp = self._request_once(role, messages, True, node_id, call_id, counter, effort, expanded)
+            resp = self._request_once(role, messages, True, node_id, call_id, counter, effort, current_expanded)
             row = resp._log_row  # type: ignore[attr-defined]
             errors: list[str] = []
             obj: dict[str, Any] | None = None
             if resp.finish_reason == "length":
-                if not resp.content.strip() and resp.completion_tokens and resp.reasoning_tokens == resp.completion_tokens:
+                if _is_reasoning_exhausted(resp, bool(row["thinking"])):
                     errors.append("the response spent its output budget before writing JSON; focus on the requested decision and return the object")
-                    effort = self._lower_effort(role, effort) or effort
+                    lower = self._lower_effort(role, effort)
+                    if lower is not None:
+                        effort = lower
+                    elif not current_expanded and self.output_limit(role, True) > self.output_limit(role, False):
+                        current_expanded = True
                 else:
                     errors.append("previous JSON was truncated; return a complete object with every required field")
+                    if not current_expanded and self.output_limit(role, True) > self.output_limit(role, False):
+                        current_expanded = True
             elif resp.finish_reason != "stop":
                 errors.append(f"incomplete response ({resp.finish_reason}); return a complete JSON object")
             elif not resp.content.strip():
@@ -655,14 +856,16 @@ class LLMGateway:
             last_errors = errors
             rejected = resp.content[:2400]
             self._log({**row, "ok": False, "error": "; ".join(errors)[:300]})
+            prior = f"\nPrior response (preserve its findings):\n{rejected}" if rejected.strip() else ""
             feedback = (
                 "Your previous answer was rejected for these reasons:\n- "
                 + "\n- ".join(errors)
-                + "\nPrior response (preserve its findings):\n" + rejected + "\nReturn the corrected JSON only."
+                + prior + "\nReturn the corrected JSON only."
             )
             if not is_last and ledger:
                 ledger.put(node_id, stage, state_key, {"call_id": call_id, "index": i + 1,
-                                                       "feedback": feedback, "effort": effort})
+                                                       "feedback": feedback, "effort": effort,
+                                                       "expanded": current_expanded})
         if attempts > 1 and ledger:
             ledger.put(node_id, stage, state_key, None)
         raise StructuredOutputError(f"structured output failed for role {role}: {'; '.join(last_errors)}")

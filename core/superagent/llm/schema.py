@@ -98,7 +98,11 @@ def validate(obj: Mapping[str, Any], schema: Schema) -> tuple[dict[str, Any], li
             errors.append(err)
         else:
             if isinstance(value, float) and not math.isfinite(value):
-                value = None if spec.nullable else value
+                if spec.nullable:
+                    value = None
+                else:
+                    errors.append(f"field '{name}' must be a finite number")
+                    continue
             out[name] = value
     return out, errors
 

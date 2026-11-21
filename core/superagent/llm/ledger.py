@@ -33,25 +33,28 @@ class CancelledCall(LLMUnavailableError):
     """The local caller cancelled this request."""
 
 
+NON_QUOTA_STATUSES = ("not_sent", "rate_limited", "overloaded")
+NO_BILLING_STATUSES = ("not_sent", "rate_limited", "overloaded", "http_rejected")
+
+
 class Ledger:
-    def __init__(self, path, extras=2, *, run_id=None):
+    def __init__(self, path, extras=2, *, run_id=None, rate_limit_retries=8):
         self.path, self.extras = Path(path), extras
+        self.rate_limit_retries = max(0, int(rate_limit_retries))
         self.run_id = run_id
         self.limit = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if run_id:
-            with closing(sqlite3.connect(self.path, timeout=10)) as conn:
-                conn.execute("PRAGMA journal_mode=WAL").fetchone()
-        with self.db() as db:
-            db.executescript("""
+        with closing(sqlite3.connect(self.path, timeout=10)) as conn:
+            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            conn.executescript("""
                 CREATE TABLE IF NOT EXISTS ops(id TEXT PRIMARY KEY, signature TEXT, status TEXT, available REAL);
                 CREATE TABLE IF NOT EXISTS stages(op TEXT, name TEXT, sig TEXT, data TEXT, PRIMARY KEY(op,name,sig));
                 CREATE TABLE IF NOT EXISTS attempts(id TEXT PRIMARY KEY, op TEXT, role TEXT, call_id TEXT, fingerprint TEXT,
                   status TEXT, reserve REAL, cost REAL, usage TEXT, started REAL, finished REAL);
             """)
             if run_id:
-                db.executescript("""
-                    BEGIN IMMEDIATE;
+                conn.executescript("""
                     CREATE TABLE IF NOT EXISTS run_identity(run_id TEXT PRIMARY KEY);
                     CREATE TABLE IF NOT EXISTS receipts(
                       receipt_seq INTEGER PRIMARY KEY, event_type TEXT NOT NULL, event_at TEXT NOT NULL,
@@ -64,6 +67,8 @@ class Ledger:
                     CREATE TABLE IF NOT EXISTS experiment_facts(
                       seq INTEGER PRIMARY KEY, operation_id TEXT UNIQUE NOT NULL, data TEXT NOT NULL);
                 """)
+        if run_id:
+            with self.db() as db:
                 existing = db.execute("SELECT run_id FROM run_identity").fetchone()
                 if existing and existing[0] != run_id:
                     raise ValueError("operations.sqlite belongs to a different run")
@@ -73,6 +78,7 @@ class Ledger:
     def db(self):
         db = sqlite3.connect(self.path, timeout=10)
         try:
+            db.execute("PRAGMA busy_timeout=10000")
             with db:
                 db.execute("BEGIN IMMEDIATE")
                 yield db
@@ -129,14 +135,27 @@ class Ledger:
         with self.db() as db:
             graph = db.execute("SELECT data FROM stages WHERE op=? AND name='normal_roles'", (op,)).fetchone()
             normal_roles = set(json.loads(graph[0])) if graph else {role}
-            rows = db.execute("SELECT role FROM attempts WHERE op=? AND status!='not_sent'", (op,)).fetchall()
+            rows = db.execute(
+                "SELECT role FROM attempts WHERE op=? AND status NOT IN ('not_sent', 'rate_limited', 'overloaded')",
+                (op,),
+            ).fetchall()
             sent = [row[0] for row in rows]
             extras = len(sent) - len(set(sent) & normal_roles)
             if (role not in normal_roles or role in sent) and extras >= self.extras:
                 raise PermanentCall("retry_exhausted")
+            transient_rejects = db.execute(
+                "SELECT count(*) FROM attempts WHERE op=? AND status IN ('rate_limited', 'overloaded')",
+                (op,),
+            ).fetchone()[0]
+            if transient_rejects >= self.rate_limit_retries:
+                raise PermanentCall("rate_limit_exhausted")
             if role in {"script_coder", "draft_integrator"} and role not in normal_roles and role in sent:
                 # Additional recovery of the same fallback is allowed under its logical call ID.
-                first = db.execute("SELECT call_id FROM attempts WHERE op=? AND role=? ORDER BY started LIMIT 1", (op, role)).fetchone()
+                first = db.execute(
+                    "SELECT call_id FROM attempts WHERE op=? AND role=? "
+                    "AND status NOT IN ('not_sent', 'rate_limited', 'overloaded') ORDER BY started LIMIT 1",
+                    (op, role),
+                ).fetchone()
                 if first and first[0] != call_id:
                     raise PermanentCall("full_script_fallback_already_used")
             db.execute(
@@ -198,11 +217,18 @@ class Ledger:
             # Each first role invocation buys one send; all additional sends share one wallet.
             if op:
                 sends, roles, used = db.execute(
-                    "SELECT count(*),count(DISTINCT role),count(CASE WHEN role=? THEN 1 END) FROM attempts WHERE op=?",
+                    "SELECT count(*),count(DISTINCT role),count(CASE WHEN role=? THEN 1 END) "
+                    "FROM attempts WHERE op=? AND status NOT IN ('not_sent', 'rate_limited', 'overloaded')",
                     (role, op),
                 ).fetchone()
                 if used and sends - roles >= self.extras:
                     raise DeferredCall("operation recovery budget exhausted")
+                transient_rejects = db.execute(
+                    "SELECT count(*) FROM attempts WHERE op=? AND status IN ('rate_limited', 'overloaded')",
+                    (op,),
+                ).fetchone()[0]
+                if transient_rejects >= self.rate_limit_retries:
+                    raise DeferredCall("operation rate limit budget exhausted")
             committed = db.execute(
                 "SELECT COALESCE(sum(COALESCE(cost,reserve)),0) FROM attempts"
             ).fetchone()[0]

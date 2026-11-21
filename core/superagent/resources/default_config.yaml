@@ -41,18 +41,19 @@ llm:
     temperature: 1.0
     max_output_tokens: 32768
     cached_input_price_per_million: 0.04
-    input_price_per_million: 2.0   # Price per 1M input tokens (no cache discount applied).
+    input_price_per_million: 2.0   # Price per 1M uncached input tokens (cache hits use cached_input_price_per_million).
     output_price_per_million: 8.0  # Price per 1M output tokens (reasoning tokens included).
   judgement:                       # Used for reading logs, reviews and other structured answers.
     model: "deepseek-flash"
     thinking: "disabled"
     reasoning_effort: "high"
-    temperature: 1.0
+    temperature: 0.0
     max_output_tokens: 8192
     cached_input_price_per_million: 0.04
     input_price_per_million: 2.0
     output_price_per_million: 8.0
   request_timeout_seconds: 1200
+  max_context_tokens: 1000000
   max_in_flight: 0                 # 0 inherits resources.parallel for isolated runs.
   request_limits:
     connect_seconds: 10.0
@@ -64,6 +65,7 @@ llm:
     code_attempt_seconds: 900.0
   stream: true
   operation_extra_sends: 2
+  operation_rate_limit_retries: 8
   role_policy:
     desc_cleaner: {max_output_tokens: 2048}
     direction_judge: {max_output_tokens: 512}

@@ -32,6 +32,7 @@ from .executor import Executor
 from .experience import ExperienceStore, make_embedder
 from .llm import Field
 from .llm.gateway import ASSESSMENT_ROLES, LLMGateway, OpenAITransport, abort_decision
+from .llm.ledger import PermanentCall
 from .profiler import SAMPLE_NAME, profile
 from .prompts import builders
 from .prompts.blocks import TASK_ALIGNMENT_RULES
@@ -105,6 +106,11 @@ def _clean_description(gw: LLMGateway, raw: str) -> str:
         cleaned = res.content.strip()
         if not cleaned or res.truncated:
             raise ValueError("empty or truncated cleaned description")
+    except PermanentCall:
+        if gw.endpoint_failure:
+            raise
+        log.warning("description cleaning failed permanently; using the original text")
+        cleaned = raw.strip()
     except Exception as exc:  # noqa: BLE001
         log.warning("description cleaning failed (%s); using the original text", exc)
         cleaned = raw.strip()
@@ -113,13 +119,17 @@ def _clean_description(gw: LLMGateway, raw: str) -> str:
 
 def _judge_direction(gw: LLMGateway, task_desc: str) -> bool:
     system, user = builders.direction_judge(task_desc)
-    for _ in range(DIRECTION_ATTEMPTS):
-        try:
-            obj = gw.structured("direction_judge", system, user, DIRECTION_SCHEMA)
-            log.info("metric direction judged by the LLM: %s (%s)", obj["goal"], str(obj["explanation"])[:200])
-            return obj["goal"] == "maximize"
-        except (StructuredOutputError, LLMUnavailableError) as exc:
-            log.warning("direction judgement failed: %s", exc)
+    attempts = max(DIRECTION_ATTEMPTS, int(gw.cfg.get("json_max_attempts", 2)))
+    try:
+        obj = gw.structured("direction_judge", system, user, DIRECTION_SCHEMA, max_attempts=attempts)
+        log.info("metric direction judged by the LLM: %s (%s)", obj["goal"], str(obj["explanation"])[:200])
+        return obj["goal"] == "maximize"
+    except PermanentCall:
+        if gw.endpoint_failure:
+            raise
+        log.warning("direction judgement rejected permanently; assuming higher is better")
+    except (StructuredOutputError, LLMUnavailableError) as exc:
+        log.warning("direction judgement failed: %s", exc)
     log.warning("could not determine the metric direction; assuming higher is better")
     return True
 
@@ -151,7 +161,7 @@ def run_task(
     handlers = _setup_logging(paths.run_log)
     intr = _interrupt or _Interrupt()
     ctx: RunContext | None = None
-    async_transport = None
+    transport_to_close = None
     try:
         try:
             load_env_file(Path.cwd() / ENV_FILE_NAME)
@@ -208,10 +218,10 @@ def run_task(
             from .llm.async_transport import AsyncDeepSeekTransport
 
             slots = cfg["llm"]["max_in_flight"] or cfg["resources"]["parallel"]
-            async_transport = AsyncDeepSeekTransport(cfg["llm"]["base_url"], api_key, cfg["llm"]["request_limits"], slots)
-            tr = async_transport
+            tr = AsyncDeepSeekTransport(cfg["llm"]["base_url"], api_key, cfg["llm"]["request_limits"], slots)
         else:
             tr = OpenAITransport(cfg["llm"]["base_url"], api_key, float(cfg["llm"]["request_timeout_seconds"]))
+        transport_to_close = tr
         gateway = LLMGateway(cfg["llm"], paths.llm_calls, tr, should_abort=should_abort, prompt_log_dir=prompt_dir, run_id=run_id)
 
         cap=cfg["control"]["cost_cap"]
@@ -372,8 +382,11 @@ def run_task(
         except Exception:  # noqa: BLE001
             return {"status": "failed", "error": str(exc)}
     finally:
-        if async_transport is not None:
-            async_transport.close()
+        if transport_to_close is not None and hasattr(transport_to_close, "close"):
+            try:
+                transport_to_close.close()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("could not close LLM transport: %s", exc)
         if ctx is not None and ctx.experience is not None:
             ctx.experience.close()
         for h in handlers:

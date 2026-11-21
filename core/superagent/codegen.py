@@ -152,6 +152,9 @@ def planned_patch(gateway, operation, signature, plan, code, rules, *, role="pat
         if not pending:
             return current
         symbols = python_symbols(current)
+        missing_targets = [item["target"] for item in pending if item["target"] not in symbols]
+        if missing_targets:
+            return None
         lines = current.splitlines()
         excerpts = {
             item["target"]: "\n".join(lines[symbols[item["target"]].lineno - 1:symbols[item["target"]].end_lineno])
@@ -191,7 +194,7 @@ class CodeGenerator:
         seen = {tuple(item) for item in saved["seen"]} if saved else set()
         expanded = saved["expanded"] if saved else False
         for i in range(len(seen), self.extract_attempts):
-            prompt = user if not note else note + "\n\n" + user
+            prompt = user if not note else user + "\n\n" + note
             key = (prompt, self.gw.output_limit(role, expanded))
             if key in seen:
                 break
@@ -212,8 +215,12 @@ class CodeGenerator:
                 "empty_response" if not res.content.strip() else "code_incomplete"
             )
             if res.finish_reason == "length" and not res.content.strip():
-                break
-            expanded = expanded or res.body_limited
+                if not expanded and self.gw.output_limit(role, True) > self.gw.output_limit(role, False):
+                    expanded = True
+                else:
+                    break
+            else:
+                expanded = expanded or res.body_limited
             note = ("# Note\nYour previous reply could not be used: " +
                     ("it was incomplete; return the complete script with all required behavior." if res.truncated else
                      "it must contain a short overview followed by one ```python block holding a complete script that parses as valid Python."))

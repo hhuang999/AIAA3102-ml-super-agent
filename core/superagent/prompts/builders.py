@@ -501,7 +501,6 @@ def patch_prompt(
 - The modified file must still run.
 - Never output the whole file. A reply without patch blocks is rejected."""
     user = join_sections(
-        retry_note,
         section("Improvement plan", plan_text),
         section("Data preview", data_preview),
         current_code_section(code),
@@ -510,6 +509,7 @@ def patch_prompt(
         reference(),
         reqs,
         PATCH_FORMAT,
+        retry_note,
         "# Output format\nYou may start with a few sentences of explanation, then the patch blocks.",
     )
     return system, user
@@ -523,7 +523,7 @@ def repair_patch_prompt(op: OpPrompt, data_preview: str, code: str, trimmed_outp
 - Every SEARCH part needs a REPLACE part. Do not put other text between blocks.
 - The modified file must still run.
 - Never output the whole file. A reply without patch blocks is rejected."""
-    user = join_sections(retry_note, *op.materials, op.requirements, reqs, PATCH_FORMAT,
+    user = join_sections(*op.materials, op.requirements, reqs, PATCH_FORMAT, retry_note,
                          "# Output format\nFirst two or three sentences explaining the fix, then the patch blocks.")
     return op.system, user
 
@@ -541,14 +541,7 @@ def reviewer(task_desc: str, code: str, mode: str, run_limit_secs: float, *, dec
     )
     user = join_sections(
         section("Task description", task_desc),
-        section("Code to review", code_block(code)),
         reference(),
-        f"""# Environment facts you must trust without question
-- ./data, ./work and ./out all exist. Do not question paths.
-- The prediction file location is ./out/predictions.csv.
-- All libraries are installed and recent enough.
-- The script's time limit is {int(run_limit_secs)} seconds.
-- {trust if mode != "off" else "There is no network access."}""",
         (f"# Strictly forbidden\n- {trust}" if mode != "off" else f"# Pretrained policy\n- {trust}"),
         f"""# Highest priority: data leakage
 - Processing order: scaling, dimensionality reduction, target encoding or similar transforms fitted BEFORE the split, or over-sampling before the split. This must be fixed. Correct order: split first, fit on the training part only, then transform each part.
@@ -575,6 +568,13 @@ original lines copied verbatim
 =======
 fixed lines
 >>>>>>> REPLACE""",
+        f"""# Environment facts you must trust without question
+- ./data, ./work and ./out all exist. Do not question paths.
+- The prediction file location is ./out/predictions.csv.
+- All libraries are installed and recent enough.
+- The script's time limit is {int(run_limit_secs)} seconds.
+- {trust if mode != "off" else "There is no network access."}""",
+        section("Code to review", code_block(code)),
     )
     return system, user
 
