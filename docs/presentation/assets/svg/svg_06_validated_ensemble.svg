@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="490" viewBox="0 0 1840 490">
+
+  <defs>
+    <filter id="sh" x="-4%" y="-6%" width="108%" height="118%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+    <linearGradient id="gNavyHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#112B5C"/>
+      <stop offset="100%" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <linearGradient id="gBlueHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1D4ED8"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="gTealHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0F766E"/>
+      <stop offset="100%" stop-color="#0D9488"/>
+    </linearGradient>
+    <linearGradient id="gGoldHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#92400E"/>
+      <stop offset="100%" stop-color="#B45309"/>
+    </linearGradient>
+    <linearGradient id="gPurpleHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#5B21B6"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="gRedHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#991B1B"/>
+      <stop offset="100%" stop-color="#DC2626"/>
+    </linearGradient>
+    <marker id="arrSlate" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#475569"/>
+    </marker>
+    <marker id="arrBlue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#1D4ED8"/>
+    </marker>
+    <marker id="arrTeal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#0F766E"/>
+    </marker>
+    <marker id="arrGold" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#B45309"/>
+    </marker>
+    <marker id="arrPurple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#6D28D9"/>
+    </marker>
+    <marker id="arrRed" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#DC2626"/>
+    </marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; }
+      .mono { font-family: Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1840" height="490" fill="#FFFFFF"/>
+<g filter="url(#sh)">
+  <rect x="20" y="35" width="395" height="420" rx="14" fill="#F8FAFC" stroke="#94A3B8" stroke-width="2"/>
+  <path d="M 20 49 Q 20 35 34 35 L 401 35 Q 415 35 415 49 L 415 77 L 20 77 Z" fill="url(#gNavyHdr)"/>
+  <text x="217.5" y="63.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">1. Top-6 Diverse Candidates</text>
+  <text x="38" y="105" fill="#112B5C" font-size="18.2" font-weight="bold">Per-Branch Diversity Cap:</text>
+  <text x="38" y="137" fill="#334155" font-size="17.2" font-weight="normal">• Max top_per_branch = 5</text>
+  <text x="38" y="167" fill="#334155" font-size="17.2" font-weight="normal">• Shared validation IDs >= 90%</text>
+  <text x="38" y="203" fill="#1D4ED8" font-size="18.2" font-weight="bold">Dual Output Channels:</text>
+  <text x="38" y="235" fill="#334155" font-size="17.2" font-weight="normal">• predictions.csv (contract labels)</text>
+  <text x="38" y="265" fill="#0F766E" font-size="17.8" font-weight="bold">• val/test_probabilities.csv</text>
+  <text x="38" y="293" fill="#475569" font-size="16.8" font-weight="normal">  (calibrated K-class sidecars)</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="465" y="35" width="415" height="420" rx="14" fill="#EFF6FF" stroke="#93C5FD" stroke-width="2"/>
+  <path d="M 465 49 Q 465 35 479 35 L 866 35 Q 880 35 880 49 L 880 77 L 465 77 Z" fill="url(#gBlueHdr)"/>
+  <text x="672.5" y="63.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">2. Metric &amp; Candidate Plans</text>
+  <text x="483" y="105" fill="#1D4ED8" font-size="18.2" font-weight="bold">Exact Metric Disambiguation:</text>
+  <text x="483" y="137" fill="#334155" font-size="17.2" font-weight="normal">• Task-desc hint + 1e-4 exact_hits</text>
+  <text x="483" y="167" fill="#0F766E" font-size="17.2" font-weight="bold">• Eliminates precision_macro drift</text>
+  <text x="483" y="203" fill="#112B5C" font-size="18.2" font-weight="bold">Evaluated Ensemble Plans:</text>
+  <text x="483" y="235" fill="#334155" font-size="17.2" font-weight="normal">• Discrete: top2/3/4/6 + pair-greedy</text>
+  <text x="483" y="265" fill="#5B21B6" font-size="17.8" font-weight="bold">• Sidecar: prob_topK + prob_greedy</text>
+  <text x="483" y="293" fill="#475569" font-size="16.8" font-weight="normal">  (weighted prob sum -> argmax)</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="930" y="35" width="455" height="420" rx="14" fill="#FFFBEB" stroke="#FCD34D" stroke-width="2"/>
+  <path d="M 930 49 Q 930 35 944 35 L 1371 35 Q 1385 35 1385 49 L 1385 77 L 930 77 Z" fill="url(#gGoldHdr)"/>
+  <text x="1157.5" y="63.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">3. stratified_halves OOS Gate</text>
+  <text x="948" y="105" fill="#92400E" font-size="18.2" font-weight="bold">Stratified Val Split -> Half A &amp; B:</text>
+  <text x="948" y="139" fill="#1E293B" font-size="17.8" font-weight="bold">• Fit weights on A  -->  Score on B</text>
+  <text x="948" y="169" fill="#1E293B" font-size="17.8" font-weight="bold">• Fit weights on B  -->  Score on A</text>
+  <text x="948" y="205" fill="#112B5C" font-size="18.2" font-weight="bold">Strict Acceptance Criterion:</text>
+  <text x="948" y="237" fill="#334155" font-size="17.2" font-weight="normal">• Must win BOTH halves by min_gain</text>
+  <text x="948" y="267" fill="#334155" font-size="17.2" font-weight="normal">• Or tie metric &amp; beat single by</text>
+  <text x="948" y="295" fill="#0F766E" font-size="17.8" font-weight="bold">  >0.001 cross-entropy log_loss!</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="1435" y="35" width="385" height="420" rx="14" fill="#F0FDFA" stroke="#5EEAD4" stroke-width="2"/>
+  <path d="M 1435 49 Q 1435 35 1449 35 L 1806 35 Q 1820 35 1820 49 L 1820 77 L 1435 77 Z" fill="url(#gTealHdr)"/>
+  <text x="1627.5" y="63.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">4. Verified Primary final/</text>
+  <text x="1453" y="105" fill="#0F766E" font-size="18.2" font-weight="bold">If Accepted -> Ensemble:</text>
+  <text x="1453" y="137" fill="#1E293B" font-size="17.2" font-weight="bold">• Intel Image: top6 -> 95.33% test</text>
+  <text x="1453" y="167" fill="#475569" font-size="16.8" font-weight="normal">  (beats 95.13% best single!)</text>
+  <text x="1453" y="203" fill="#112B5C" font-size="18.2" font-weight="bold">If Rejected -> Safe Fallback:</text>
+  <text x="1453" y="235" fill="#334155" font-size="17.2" font-weight="normal">• Keeps best single (zero harm)</text>
+  <text x="1453" y="269" fill="#1D4ED8" font-size="18.2" font-weight="bold">Deterministic Replay:</text>
+  <text x="1453" y="299" fill="#334155" font-size="17.2" font-weight="normal">• Byte-exact combine.py &amp; core11</text>
+</g>
+<line x1="415" y1="245" x2="461" y2="245" stroke="#1D4ED8" stroke-width="3.2" marker-end="url(#arrBlue)"/>
+<line x1="880" y1="245" x2="926" y2="245" stroke="#B45309" stroke-width="3.2" marker-end="url(#arrGold)"/>
+<line x1="1385" y1="245" x2="1431" y2="245" stroke="#0F766E" stroke-width="3.2" marker-end="url(#arrTeal)"/>
+</svg>

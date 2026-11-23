@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="530" viewBox="0 0 1840 530">
+
+  <defs>
+    <filter id="sh" x="-4%" y="-6%" width="108%" height="118%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+    <linearGradient id="gNavyHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#112B5C"/>
+      <stop offset="100%" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <linearGradient id="gBlueHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1D4ED8"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="gTealHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0F766E"/>
+      <stop offset="100%" stop-color="#0D9488"/>
+    </linearGradient>
+    <linearGradient id="gGoldHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#92400E"/>
+      <stop offset="100%" stop-color="#B45309"/>
+    </linearGradient>
+    <linearGradient id="gPurpleHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#5B21B6"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="gRedHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#991B1B"/>
+      <stop offset="100%" stop-color="#DC2626"/>
+    </linearGradient>
+    <marker id="arrSlate" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#475569"/>
+    </marker>
+    <marker id="arrBlue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#1D4ED8"/>
+    </marker>
+    <marker id="arrTeal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#0F766E"/>
+    </marker>
+    <marker id="arrGold" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#B45309"/>
+    </marker>
+    <marker id="arrPurple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#6D28D9"/>
+    </marker>
+    <marker id="arrRed" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#DC2626"/>
+    </marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; }
+      .mono { font-family: Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1840" height="530" fill="#FFFFFF"/>
+<rect x="18" y="14" width="1068" height="502" rx="16" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="2"/>
+<text x="552" y="46" text-anchor="middle" fill="#112B5C" font-size="21.5" font-weight="bold">Multi-Branch Search Tree &amp; Dual Explore–Exploit Selection (selection.py)</text>
+<rect x="372" y="64" width="360" height="46" rx="23" fill="#112B5C"/>
+<text x="552" y="93" text-anchor="middle" fill="#FFFFFF" font-size="18.5" font-weight="bold">Root (initial_drafts=3, max_drafts=5)</text>
+<line x1="552" y1="110" x2="206" y2="146" stroke="#1D4ED8" stroke-width="2.6" marker-end="url(#arrSlate)"/>
+<rect x="46" y="150" width="320" height="68" rx="12" fill="#EFF6FF" stroke="#1D4ED8" stroke-width="2"/>
+<text x="206" y="178" text-anchor="middle" fill="#1D4ED8" font-size="18" font-weight="bold">Branch 1 · Draft 0</text>
+<text x="206" y="204" text-anchor="middle" fill="#334155" font-size="15.8">TabICL / GBDT / ConvNeXt</text>
+<line x1="552" y1="110" x2="552" y2="146" stroke="#0F766E" stroke-width="2.6" marker-end="url(#arrSlate)"/>
+<rect x="392" y="150" width="320" height="68" rx="12" fill="#F0FDFA" stroke="#0F766E" stroke-width="2"/>
+<text x="552" y="178" text-anchor="middle" fill="#0F766E" font-size="18" font-weight="bold">Branch 2 · Draft 1</text>
+<text x="552" y="204" text-anchor="middle" fill="#334155" font-size="15.8">Emb-MLP / FT-Trans / DINOv2</text>
+<line x1="552" y1="110" x2="898" y2="146" stroke="#6D28D9" stroke-width="2.6" marker-end="url(#arrSlate)"/>
+<rect x="738" y="150" width="320" height="68" rx="12" fill="#FAF5FF" stroke="#6D28D9" stroke-width="2"/>
+<text x="898" y="178" text-anchor="middle" fill="#6D28D9" font-size="18" font-weight="bold">Branch 3 · Draft 2</text>
+<text x="898" y="204" text-anchor="middle" fill="#334155" font-size="15.8">CatBoost+ET / EffNetV2</text>
+<g filter="url(#sh)">
+  <rect x="42" y="248" width="495" height="166" rx="14" fill="#FFFFFF" stroke="#93C5FD" stroke-width="2"/>
+  <path d="M 42 262 Q 42 248 56 248 L 523 248 Q 537 248 537 262 L 537 286 L 42 286 Z" fill="url(#gBlueHdr)"/>
+  <text x="289.5" y="274.0" text-anchor="middle" fill="#FFFFFF" font-size="18.5" font-weight="bold">Exploration: tree_walk (Decaying UCT)</text>
+  <text x="60" y="314" fill="#1D4ED8" font-size="15.8" font-weight="bold">UCB(c) = R_c/N_c + c(t) * sqrt(ln N_p / N_c)  [unvisited = inf]</text>
+  <text x="60" y="343" fill="#1E293B" font-size="15.8" font-weight="normal">• c(t) decays: 1.414 -> 0.50 (decay 0.01/step, ratios [0.3, 0.7])</text>
+  <text x="60" y="372" fill="#334155" font-size="15.8" font-weight="normal">• Depth caps: max_refinements=3/node, max_repairs=1/node</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="566" y="248" width="496" height="166" rx="14" fill="#FFFFFF" stroke="#5EEAD4" stroke-width="2"/>
+  <path d="M 566 262 Q 566 248 580 248 L 1048 248 Q 1062 248 1062 262 L 1062 286 L 566 286 Z" fill="url(#gTealHdr)"/>
+  <text x="814.0" y="274.0" text-anchor="middle" fill="#FFFFFF" font-size="18.5" font-weight="bold">Exploitation: elite_pick (Diversified Pool)</text>
+  <text x="584" y="314" fill="#0F766E" font-size="15.0" font-weight="bold">• Top Pool: early_k=5 (3/branch) -> late_k=3 (2/branch)</text>
+  <text x="584" y="343" fill="#1E293B" font-size="15.2" font-weight="normal">• Inverse-rank sampling w_i ~ 1/rank_i (elite_max_children=10)</text>
+  <text x="584" y="372" fill="#334155" font-size="15.0" font-weight="normal">• chain_soft_switch + thread-local Dispatch.via_elite (race-free)</text>
+</g>
+<line x1="206" y1="218" x2="260" y2="244" stroke="#1D4ED8" stroke-width="2.4" marker-end="url(#arrBlue)"/>
+<line x1="552" y1="218" x2="430" y2="244" stroke="#1D4ED8" stroke-width="2.2" marker-end="url(#arrBlue)"/>
+<line x1="552" y1="218" x2="690" y2="244" stroke="#0F766E" stroke-width="2.2" marker-end="url(#arrTeal)"/>
+<line x1="898" y1="218" x2="840" y2="244" stroke="#0F766E" stroke-width="2.4" marker-end="url(#arrTeal)"/>
+<rect x="42" y="428" width="1020" height="72" rx="12" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.6"/>
+<text x="58" y="454" fill="#112B5C" font-size="16" font-weight="bold">explore_weight(p) Schedule:</text>
+<rect x="58" y="464" width="465" height="24" rx="5" fill="#1D4ED8"/>
+<text x="290" y="481" text-anchor="middle" fill="#FFFFFF" font-size="13.8" font-weight="bold">p &lt; 0.5 :  w = 1.0 (Full UCT Exploration)</text>
+<rect x="528" y="464" width="215" height="24" rx="5" fill="#7C3AED"/>
+<text x="635" y="481" text-anchor="middle" fill="#FFFFFF" font-size="13.2" font-weight="bold">0.5..0.7 : Linear 1.0 -> 0.2</text>
+<rect x="748" y="464" width="296" height="24" rx="5" fill="#0F766E"/>
+<text x="896" y="481" text-anchor="middle" fill="#FFFFFF" font-size="13.8" font-weight="bold">p &gt;= 0.7 : w = 0.2 (80% Elite Focus)</text>
+<rect x="1108" y="14" width="714" height="502" rx="16" fill="#FFFFFF" stroke="#112B5C" stroke-width="2.4"/>
+<path d="M 1108 30 Q 1108 14 1124 14 L 1806 14 Q 1822 14 1822 30 L 1822 62 L 1108 62 Z" fill="url(#gNavyHdr)"/>
+<text x="1465" y="45" text-anchor="middle" fill="#FFFFFF" font-size="20.5" font-weight="bold">Chain Control, Smooth Reward &amp; Anti-Race (chain.py)</text>
+<g filter="url(#sh)">
+  <rect x="1132" y="80" width="666" height="198" rx="14" fill="#FAF5FF" stroke="#C4B5FD" stroke-width="2"/>
+  <path d="M 1132 94 Q 1132 80 1146 80 L 1784 80 Q 1798 80 1798 94 L 1798 118 L 1132 118 Z" fill="url(#gPurpleHdr)"/>
+  <text x="1465.0" y="106.0" text-anchor="middle" fill="#FFFFFF" font-size="18.5" font-weight="bold">Smooth Step Reward &amp; Per-Node Chain State</text>
+  <text x="1150" y="146" fill="#1E293B" font-size="16.6" font-weight="normal">• Fail: -1.0  |  First branch ok: +0.5  |  Gain &lt; 1e-4: 0.0</text>
+  <text x="1150" y="178" fill="#5B21B6" font-size="16.8" font-weight="bold">• New branch best: min(1.5, 0.75 + g / max(|s_prev|, 0.05))</text>
+  <text x="1150" y="210" fill="#1E293B" font-size="16.5" font-weight="bold">• Per-node local no_gain_count (zero cross-worker race!):</text>
+  <text x="1150" y="242" fill="#334155" font-size="15.8" font-weight="normal">  resets to 0 on beat; +1 otherwise; dead_end at max_no_gain=3</text>
+  <text x="1150" y="272" fill="#334155" font-size="15.8" font-weight="normal">• Repair bounds: return root at depth=3, dead_end at depth=20</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="1132" y="298" width="666" height="200" rx="14" fill="#FFFBEB" stroke="#FCD34D" stroke-width="2"/>
+  <path d="M 1132 312 Q 1132 298 1146 298 L 1784 298 Q 1798 298 1798 312 L 1798 336 L 1132 336 Z" fill="url(#gGoldHdr)"/>
+  <text x="1465.0" y="324.0" text-anchor="middle" fill="#FFFFFF" font-size="18.5" font-weight="bold">Forced Return &amp; Concurrency-Safe Plateau Windows</text>
+  <text x="1150" y="364" fill="#92400E" font-size="16.8" font-weight="bold">• forced_return prevents single-chain runaway:</text>
+  <text x="1150" y="396" fill="#1E293B" font-size="15.8" font-weight="normal">  p>=0.4 every mid_every=3 steps | p>=0.8 w/ late_prob=0.5</text>
+  <text x="1150" y="428" fill="#0F766E" font-size="16.2" font-weight="bold">• Exempts nodes beating/tying best of recent_window=4</text>
+  <text x="1150" y="460" fill="#1D4ED8" font-size="16.5" font-weight="bold">• Anti-race plateau filter _after_best_finished(n, best):</text>
+  <text x="1150" y="490" fill="#334155" font-size="15.4" font-weight="normal">  counts only n.created_at >= best.finished_at (branch=3 / elite=6)</text>
+</g>
+</svg>

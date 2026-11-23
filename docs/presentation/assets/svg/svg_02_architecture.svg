@@ -1,0 +1,162 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="600" viewBox="0 0 1840 600">
+
+  <defs>
+    <filter id="sh" x="-4%" y="-6%" width="108%" height="118%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+    <linearGradient id="gNavyHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#112B5C"/>
+      <stop offset="100%" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <linearGradient id="gBlueHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1D4ED8"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="gTealHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0F766E"/>
+      <stop offset="100%" stop-color="#0D9488"/>
+    </linearGradient>
+    <linearGradient id="gGoldHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#92400E"/>
+      <stop offset="100%" stop-color="#B45309"/>
+    </linearGradient>
+    <linearGradient id="gPurpleHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#5B21B6"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="gRedHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#991B1B"/>
+      <stop offset="100%" stop-color="#DC2626"/>
+    </linearGradient>
+    <marker id="arrSlate" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#475569"/>
+    </marker>
+    <marker id="arrBlue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#1D4ED8"/>
+    </marker>
+    <marker id="arrTeal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#0F766E"/>
+    </marker>
+    <marker id="arrGold" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#B45309"/>
+    </marker>
+    <marker id="arrPurple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#6D28D9"/>
+    </marker>
+    <marker id="arrRed" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#DC2626"/>
+    </marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; }
+      .mono { font-family: Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1840" height="600" fill="#FFFFFF"/>
+<rect x="18" y="18" width="350" height="560" rx="16" fill="#F8FAFC" stroke="#94A3B8" stroke-width="2" stroke-dasharray="7,5"/>
+<text x="193" y="48" text-anchor="middle" fill="#112B5C" font-size="21" font-weight="bold">1. Input Adapter Layer</text>
+<g filter="url(#sh)">
+  <rect x="36" y="68" width="314" height="138" rx="14" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+  <path d="M 36 82 Q 36 68 50 68 L 336 68 Q 350 68 350 82 L 350 108 L 36 108 Z" fill="url(#gNavyHdr)"/>
+  <text x="193.0" y="95.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">prepare &amp; check_isolation</text>
+  <text x="54" y="136" fill="#334155" font-size="17.2" font-weight="normal">• SHA-256 input &amp; schema lock</text>
+  <text x="54" y="164" fill="#334155" font-size="17.2" font-weight="normal">• Zero-prompt 4-GPU defaults</text>
+  <text x="54" y="192" fill="#1D4ED8" font-size="17.2" font-weight="bold">• Builds clean task/ workspace</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="36" y="232" width="314" height="126" rx="14" fill="#EFF6FF" stroke="#93C5FD" stroke-width="2"/>
+  <path d="M 36 246 Q 36 232 50 232 L 336 232 Q 350 232 350 246 L 350 270 L 36 270 Z" fill="url(#gBlueHdr)"/>
+  <text x="193.0" y="258.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">Public task/ Directory</text>
+  <text x="54" y="298" fill="#1E293B" font-size="17.2" font-weight="normal">• description.md + sample CSV</text>
+  <text x="54" y="325" fill="#1E293B" font-size="17.2" font-weight="normal">• train.csv / val.csv / images/</text>
+  <text x="54" y="352" fill="#1D4ED8" font-size="17.2" font-weight="bold">• Unlabeled test features only</text>
+</g>
+<rect x="36" y="378" width="314" height="32" rx="6" fill="#FEE2E2" stroke="#DC2626" stroke-width="1.8"/>
+<text x="193" y="400" text-anchor="middle" fill="#991B1B" font-size="14.5" font-weight="bold">STRICT LABEL FIREWALL (No Core Access)</text>
+<g filter="url(#sh)">
+  <rect x="36" y="424" width="314" height="126" rx="14" fill="#FEF2F2" stroke="#FCA5A5" stroke-width="2"/>
+  <path d="M 36 438 Q 36 424 50 424 L 336 424 Q 350 424 350 438 L 350 462 L 36 462 Z" fill="url(#gRedHdr)"/>
+  <text x="193.0" y="450.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">Sealed private/ Labels</text>
+  <text x="54" y="490" fill="#7F1D1D" font-size="18" font-weight="bold">• private/test_labels.csv</text>
+  <text x="54" y="518" fill="#334155" font-size="17" font-weight="normal">• Held strictly outside task_dir</text>
+</g>
+<rect x="396" y="18" width="1048" height="532" rx="16" fill="#EFF6FF" stroke="#2563EB" stroke-width="2.4"/>
+<text x="920" y="48" text-anchor="middle" fill="#112B5C" font-size="22" font-weight="bold">2. SuperAgent Core 1.1 Search Engine (4 GPUs · 4 Workers)</text>
+<g filter="url(#sh)">
+  <rect x="418" y="68" width="305" height="138" rx="14" fill="#FFFFFF" stroke="#93C5FD" stroke-width="2"/>
+  <path d="M 418 82 Q 418 68 432 68 L 709 68 Q 723 68 723 82 L 723 106 L 418 106 Z" fill="url(#gBlueHdr)"/>
+  <text x="570.5" y="94.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">Profiler &amp; Method Catalog</text>
+  <text x="436" y="134" fill="#334155" font-size="17.2" font-weight="normal">• Auto modality detection</text>
+  <text x="436" y="161" fill="#334155" font-size="16.5" font-weight="normal">• Offline SHA-256 + forward probe</text>
+  <text x="436" y="188" fill="#1D4ED8" font-size="17.2" font-weight="bold">• Orthogonal draft hypotheses</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="766" y="68" width="320" height="138" rx="14" fill="#FFFFFF" stroke="#64748B" stroke-width="2"/>
+  <path d="M 766 82 Q 766 68 780 68 L 1072 68 Q 1086 68 1086 82 L 1086 106 L 766 106 Z" fill="url(#gNavyHdr)"/>
+  <text x="926.0" y="94.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">AdaptiveController</text>
+  <text x="784" y="134" fill="#334155" font-size="17.2" font-weight="normal">• UCT &lt;-&gt; Elite tree scheduler</text>
+  <text x="784" y="161" fill="#334155" font-size="16.8" font-weight="normal">• Value-density + complementarity</text>
+  <text x="784" y="188" fill="#0F766E" font-size="17.2" font-weight="bold">• Decoupled slot_share timeout</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="1126" y="68" width="296" height="138" rx="14" fill="#FAF5FF" stroke="#C4B5FD" stroke-width="2"/>
+  <path d="M 1126 82 Q 1126 68 1140 68 L 1408 68 Q 1422 68 1422 82 L 1422 106 L 1126 106 Z" fill="url(#gPurpleHdr)"/>
+  <text x="1274.0" y="94.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">Hybrid ExperienceStore</text>
+  <text x="1144" y="134" fill="#334155" font-size="16.8" font-weight="normal">• Qwen3-Embedding-0.6B (CPU)</text>
+  <text x="1144" y="161" fill="#334155" font-size="16.8" font-weight="normal">• CamelCase/CJK BM25 + RRF</text>
+  <text x="1144" y="188" fill="#5B21B6" font-size="16.8" font-weight="bold">• +1 Gains &amp; -1 Counterexamples</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="418" y="238" width="485" height="142" rx="14" fill="#FFFFFF" stroke="#5EEAD4" stroke-width="2"/>
+  <path d="M 418 252 Q 418 238 432 238 L 889 238 Q 903 238 903 252 L 903 276 L 418 276 Z" fill="url(#gTealHdr)"/>
+  <text x="660.5" y="264.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">7 Operators &amp; AST-Scoped Patching</text>
+  <text x="436" y="304" fill="#0F766E" font-size="14.3" font-weight="bold">• draft · refine · repair · retrospect · borrow · synthesis · promote</text>
+  <text x="436" y="332" fill="#334155" font-size="16.3" font-weight="normal">• Structured Planner (autonomous target) -> AST Patch</text>
+  <text x="436" y="359" fill="#334155" font-size="16.3" font-weight="normal">• Role-stratified thinking &amp; isolated worker execution</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="938" y="238" width="484" height="142" rx="14" fill="#FFFFFF" stroke="#FCD34D" stroke-width="2"/>
+  <path d="M 938 252 Q 938 238 952 238 L 1408 238 Q 1422 238 1422 252 L 1422 276 L 938 276 Z" fill="url(#gGoldHdr)"/>
+  <text x="1180.0" y="264.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">Risk-Gated Review &amp; GPU Executor</text>
+  <text x="956" y="304" fill="#334155" font-size="16.5" font-weight="normal">• AST/Risk Reviewer blocks split &amp; val-snooping leaks</text>
+  <text x="956" y="331" fill="#334155" font-size="16.5" font-weight="normal">• 200-row SUPERAGENT_SMOKE=1 fast gate (&lt;=180s)</text>
+  <text x="956" y="358" fill="#92400E" font-size="16.5" font-weight="bold">• Dedicated per-slot GPU run + portable ./out/model/</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="418" y="408" width="1004" height="126" rx="14" fill="#FFFFFF" stroke="#1E3A8A" stroke-width="2"/>
+  <path d="M 418 422 Q 418 408 432 408 L 1408 408 Q 1422 408 1422 422 L 1422 446 L 418 446 Z" fill="url(#gNavyHdr)"/>
+  <text x="920.0" y="434.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">Independent Assessment &amp; Validated Final Builder (final.py)</text>
+  <text x="436" y="474" fill="#334155" font-size="17.0" font-weight="normal">• Task-hint + exact-hit (1e-4) metric identification  |  Jump-triggered leak audit  |  Top-K model retention</text>
+  <text x="436" y="503" fill="#1D4ED8" font-size="16.8" font-weight="bold">• stratified_halves Two-Half OOS Gate: Odd-pair greedy voting + Probability Sidecars (prob_argmax + log_loss)</text>
+</g>
+<rect x="1472" y="18" width="350" height="560" rx="16" fill="#F0FDFA" stroke="#0F766E" stroke-width="2.2"/>
+<text x="1647" y="48" text-anchor="middle" fill="#0F766E" font-size="21" font-weight="bold">3. Verified Delivery</text>
+<g filter="url(#sh)">
+  <rect x="1490" y="68" width="314" height="210" rx="14" fill="#FFFFFF" stroke="#5EEAD4" stroke-width="2"/>
+  <path d="M 1490 82 Q 1490 68 1504 68 L 1790 68 Q 1804 68 1804 82 L 1804 108 L 1490 108 Z" fill="url(#gTealHdr)"/>
+  <text x="1647.0" y="95.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">core11.py Offline Audit</text>
+  <text x="1508" y="136" fill="#334155" font-size="17.2" font-weight="normal">• Zero Core code execution</text>
+  <text x="1508" y="165" fill="#334155" font-size="17.2" font-weight="normal">• Verifies model symlink lineage</text>
+  <text x="1508" y="194" fill="#334155" font-size="17.2" font-weight="normal">• Replays vote / prob_argmax</text>
+  <text x="1508" y="223" fill="#0F766E" font-size="17.2" font-weight="bold">• Byte-exact combine.py check</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="1490" y="326" width="314" height="216" rx="14" fill="#FFFFFF" stroke="#94A3B8" stroke-width="2"/>
+  <path d="M 1490 340 Q 1490 326 1504 326 L 1790 326 Q 1804 326 1804 340 L 1804 366 L 1490 366 Z" fill="url(#gNavyHdr)"/>
+  <text x="1647.0" y="353.0" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">Final Evaluation &amp; Report</text>
+  <text x="1508" y="394" fill="#334155" font-size="17.2" font-weight="normal">• One-shot grading vs private/</text>
+  <text x="1508" y="423" fill="#334155" font-size="17.2" font-weight="normal">• Writes adapter/outcome.json</text>
+  <text x="1508" y="452" fill="#334155" font-size="17.2" font-weight="normal">• Lineage report &amp; trace</text>
+  <text x="1508" y="481" fill="#112B5C" font-size="17.2" font-weight="bold">• Self-contained delivery/ bundle</text>
+</g>
+<line x1="350" y1="295" x2="414" y2="150" stroke="#1D4ED8" stroke-width="2.8" marker-end="url(#arrBlue)"/>
+<line x1="723" y1="137" x2="762" y2="137" stroke="#475569" stroke-width="2.8" marker-end="url(#arrSlate)"/>
+<line x1="1086" y1="137" x2="1122" y2="137" stroke="#475569" stroke-width="2.8" marker-end="url(#arrSlate)"/>
+<line x1="920" y1="206" x2="660" y2="234" stroke="#1D4ED8" stroke-width="2.8" marker-end="url(#arrBlue)"/>
+<line x1="903" y1="309" x2="934" y2="309" stroke="#0F766E" stroke-width="2.8" marker-end="url(#arrTeal)"/>
+<line x1="1180" y1="380" x2="1050" y2="404" stroke="#B45309" stroke-width="2.8" marker-end="url(#arrGold)"/>
+<line x1="1422" y1="470" x2="1486" y2="190" stroke="#0F766E" stroke-width="2.8" marker-end="url(#arrTeal)"/>
+<line x1="1647" y1="278" x2="1647" y2="322" stroke="#0F766E" stroke-width="2.8" marker-end="url(#arrTeal)"/>
+<path d="M 350 536 L 382 536 L 382 568 L 1456 568 L 1456 490 L 1486 490" fill="none" stroke="#DC2626" stroke-width="2.8" stroke-dasharray="8,5" marker-end="url(#arrRed)"/>
+<text x="920" y="588" text-anchor="middle" fill="#991B1B" font-size="14.5" font-weight="bold">Sealed private/ labels bypass Core 1.1 completely — accessed ONLY during post-run evaluation</text>
+</svg>

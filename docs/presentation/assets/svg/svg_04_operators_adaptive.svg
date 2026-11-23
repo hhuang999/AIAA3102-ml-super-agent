@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="530" viewBox="0 0 1840 530">
+
+  <defs>
+    <filter id="sh" x="-4%" y="-6%" width="108%" height="118%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+    <linearGradient id="gNavyHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#112B5C"/>
+      <stop offset="100%" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <linearGradient id="gBlueHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1D4ED8"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="gTealHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0F766E"/>
+      <stop offset="100%" stop-color="#0D9488"/>
+    </linearGradient>
+    <linearGradient id="gGoldHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#92400E"/>
+      <stop offset="100%" stop-color="#B45309"/>
+    </linearGradient>
+    <linearGradient id="gPurpleHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#5B21B6"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="gRedHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#991B1B"/>
+      <stop offset="100%" stop-color="#DC2626"/>
+    </linearGradient>
+    <marker id="arrSlate" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#475569"/>
+    </marker>
+    <marker id="arrBlue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#1D4ED8"/>
+    </marker>
+    <marker id="arrTeal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#0F766E"/>
+    </marker>
+    <marker id="arrGold" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#B45309"/>
+    </marker>
+    <marker id="arrPurple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#6D28D9"/>
+    </marker>
+    <marker id="arrRed" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#DC2626"/>
+    </marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; }
+      .mono { font-family: Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1840" height="530" fill="#FFFFFF"/>
+<rect x="18" y="14" width="1044" height="502" rx="16" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="2"/>
+<text x="540" y="46" text-anchor="middle" fill="#112B5C" font-size="21.5" font-weight="bold">7 Specialized Evolutionary Operators (operators.py &amp; scheduling.py)</text>
+<text x="42" y="78" fill="#475569" font-size="15.5" font-weight="bold">Tier 1 · Root Seeding &amp; Local Evolution</text>
+<rect x="42" y="92" width="316" height="106" rx="12" fill="#EFF6FF" stroke="#1D4ED8" stroke-width="2"/>
+<text x="200.0" y="122" text-anchor="middle" fill="#1D4ED8" font-size="18.5" font-weight="bold">1. draft (t = 0)</text>
+<text x="200.0" y="151" text-anchor="middle" fill="#1E293B" font-size="15.2">assign_draft_hypotheses() seeds</text>
+<text x="200.0" y="176" text-anchor="middle" fill="#334155" font-size="15.2">orthogonal families (parallel=4)</text>
+<rect x="382" y="92" width="316" height="106" rx="12" fill="#F0FDFA" stroke="#0F766E" stroke-width="2"/>
+<text x="540.0" y="122" text-anchor="middle" fill="#0F766E" font-size="18.5" font-weight="bold">2. refine</text>
+<text x="540.0" y="151" text-anchor="middle" fill="#1E293B" font-size="15.2">Structured plan -> AST import-aware</text>
+<text x="540.0" y="176" text-anchor="middle" fill="#334155" font-size="15.2">SEARCH/REPLACE targeted patch</text>
+<rect x="722" y="92" width="316" height="106" rx="12" fill="#FFFBEB" stroke="#B45309" stroke-width="2"/>
+<text x="880.0" y="122" text-anchor="middle" fill="#B45309" font-size="18.5" font-weight="bold">3. repair</text>
+<text x="880.0" y="151" text-anchor="middle" fill="#1E293B" font-size="15.2">Traceback + failure recall fix;</text>
+<text x="880.0" y="176" text-anchor="middle" fill="#334155" font-size="15.2">1 tier-2 retry for failed drafts</text>
+<text x="42" y="230" fill="#475569" font-size="15.5" font-weight="bold">Tier 2 · Trajectory Escalation &amp; Zero-LLM Compute Continuation</text>
+<rect x="42" y="244" width="484" height="106" rx="12" fill="#FAF5FF" stroke="#6D28D9" stroke-width="2"/>
+<text x="284" y="274" text-anchor="middle" fill="#6D28D9" font-size="18.5" font-weight="bold">4. retrospect (Plateau &amp; Trajectory)</text>
+<text x="284" y="303" text-anchor="middle" fill="#1E293B" font-size="15.5">Reviews up to 10-step ancestor trajectory</text>
+<text x="284" y="328" text-anchor="middle" fill="#334155" font-size="15.5">+ Level-2/3 escalation (ok_since&gt;=2 or all&gt;=5)</text>
+<rect x="554" y="244" width="484" height="106" rx="12" fill="#F0FDFA" stroke="#0F766E" stroke-width="2.2"/>
+<text x="796" y="274" text-anchor="middle" fill="#0F766E" font-size="18.5" font-weight="bold">5. promote (Zero-LLM Rung Continuation)</text>
+<text x="796" y="303" text-anchor="middle" fill="#1E293B" font-size="15.5">Successive Halving: resumes saved checkpoint (max_rung=3)</text>
+<text x="796" y="328" text-anchor="middle" fill="#0F766E" font-size="15.5" font-weight="bold">Verified by optimizer_steps + weight SHA-256 (0 LLM calls)</text>
+<text x="42" y="382" fill="#475569" font-size="15.5" font-weight="bold">Tier 3 · Cross-Branch Crossover &amp; Global Plateau Fusion (p &gt;= 0.5)</text>
+<rect x="42" y="396" width="484" height="106" rx="12" fill="#EFF6FF" stroke="#1D4ED8" stroke-width="2"/>
+<text x="284" y="426" text-anchor="middle" fill="#1D4ED8" font-size="18.5" font-weight="bold">6. borrow (Cross-Branch Grafting)</text>
+<text x="284" y="455" text-anchor="middle" fill="#1E293B" font-size="15.5">Past p=0.5 (prob=0.3): transfers donor branch</text>
+<text x="284" y="480" text-anchor="middle" fill="#334155" font-size="15.5">cards + code excerpt onto stalled branch (up to 5 refs)</text>
+<rect x="554" y="396" width="484" height="106" rx="12" fill="#FFFBEB" stroke="#B45309" stroke-width="2"/>
+<text x="796" y="426" text-anchor="middle" fill="#92400E" font-size="18.5" font-weight="bold">7. synthesis (Multi-Branch Fusion)</text>
+<text x="796" y="455" text-anchor="middle" fill="#1E293B" font-size="15.5">Window [0.5, 0.83], global_window=4, &gt;=2 rich branches</text>
+<text x="796" y="480" text-anchor="middle" fill="#334155" font-size="15.5">Recombines diverse branch reps from Root (max 2x)</text>
+<rect x="1086" y="14" width="736" height="502" rx="16" fill="#FFFFFF" stroke="#112B5C" stroke-width="2.4"/>
+<path d="M 1086 30 Q 1086 14 1102 14 L 1806 14 Q 1822 14 1822 30 L 1822 62 L 1086 62 Z" fill="url(#gNavyHdr)"/>
+<text x="1454" y="45" text-anchor="middle" fill="#FFFFFF" font-size="20.5" font-weight="bold">Adaptive Value-Density Admission (control/adaptive.py)</text>
+<g filter="url(#sh)">
+  <rect x="1110" y="80" width="688" height="212" rx="14" fill="#EFF6FF" stroke="#93C5FD" stroke-width="2"/>
+  <path d="M 1110 94 Q 1110 80 1124 80 L 1784 80 Q 1798 80 1798 94 L 1798 118 L 1110 118 Z" fill="url(#gBlueHdr)"/>
+  <text x="1454.0" y="106.0" text-anchor="middle" fill="#FFFFFF" font-size="18.2" font-weight="bold">Complementarity-Guided Priority &amp; Multi-Slot Ranking</text>
+  <text x="1128" y="146" fill="#1D4ED8" font-size="17.5" font-weight="bold">priority = merit * p_ok / max(need_secs, 1)</text>
+  <text x="1128" y="178" fill="#112B5C" font-size="15.8" font-weight="bold">merit = 0.2 + 1/(1+0.12*r) + 0.4/(1+children) + min(0.5, comp)</text>
+  <text x="1128" y="210" fill="#0F766E" font-size="15.8" font-weight="bold">• comp = mean((best != y_val) &amp; (node == y_val)) [diversity!]</text>
+  <text x="1128" y="240" fill="#1E293B" font-size="15.8" font-weight="normal">• rank_proposals(): multi-slot proposal keys (slot=k)</text>
+  <text x="1128" y="269" fill="#334155" font-size="15.0" font-weight="normal">• Autonomous target=None -> planner picks data_prep/model_def/train_eval</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="1110" y="310" width="688" height="188" rx="14" fill="#F0FDFA" stroke="#5EEAD4" stroke-width="2"/>
+  <path d="M 1110 324 Q 1110 310 1124 310 L 1784 310 Q 1798 310 1798 324 L 1798 348 L 1110 348 Z" fill="url(#gTealHdr)"/>
+  <text x="1454.0" y="336.0" text-anchor="middle" fill="#FFFFFF" font-size="18.2" font-weight="bold">Decoupled Slot-Scaled Execution Timeout &amp; Quota Safety</text>
+  <text x="1128" y="376" fill="#1E293B" font-size="15.8" font-weight="normal">• Priority estimates exclude crashed runs: median(ok_script_secs)</text>
+  <text x="1128" y="408" fill="#0F766E" font-size="16.5" font-weight="bold">• Kill ceiling: max(2.5 * q0.8(ok_secs), 0.75 * slot_share)</text>
+  <text x="1128" y="440" fill="#1E293B" font-size="15.6" font-weight="normal">  where slot_share = (T_rem - T_res) * num_gpus / rem_nodes</text>
+  <text x="1128" y="470" fill="#1D4ED8" font-size="15.8" font-weight="bold">• Auto-scales cleanly: ~40s (smoke) -> 300s+ (1h) -> 1000s+ (6h)</text>
+</g>
+</svg>

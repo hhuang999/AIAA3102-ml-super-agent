@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="500" viewBox="0 0 1840 500">
+
+  <defs>
+    <filter id="sh" x="-4%" y="-6%" width="108%" height="118%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+    <linearGradient id="gNavyHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#112B5C"/>
+      <stop offset="100%" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <linearGradient id="gBlueHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1D4ED8"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="gTealHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0F766E"/>
+      <stop offset="100%" stop-color="#0D9488"/>
+    </linearGradient>
+    <linearGradient id="gGoldHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#92400E"/>
+      <stop offset="100%" stop-color="#B45309"/>
+    </linearGradient>
+    <linearGradient id="gPurpleHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#5B21B6"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="gRedHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#991B1B"/>
+      <stop offset="100%" stop-color="#DC2626"/>
+    </linearGradient>
+    <marker id="arrSlate" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#475569"/>
+    </marker>
+    <marker id="arrBlue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#1D4ED8"/>
+    </marker>
+    <marker id="arrTeal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#0F766E"/>
+    </marker>
+    <marker id="arrGold" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#B45309"/>
+    </marker>
+    <marker id="arrPurple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#6D28D9"/>
+    </marker>
+    <marker id="arrRed" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#DC2626"/>
+    </marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; }
+      .mono { font-family: Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1840" height="500" fill="#FFFFFF"/>
+<g filter="url(#sh)">
+  <rect x="20" y="18" width="430" height="462" rx="16" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="2"/>
+  <path d="M 20 34 Q 20 18 36 18 L 434 18 Q 450 18 450 34 L 450 68 L 20 68 Z" fill="url(#gNavyHdr)"/>
+  <text x="235.0" y="50" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">1. Data &amp; Validation Leakage</text>
+  <rect x="36" y="84" width="398" height="168" rx="10" fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1.5"/>
+  <text x="48" y="114" fill="#991B1B" font-size="18" font-weight="bold">Problem:</text>
+  <text x="48" y="148" fill="#334155" font-size="18" font-weight="normal">• Pre-split scaling / target encoding</text>
+  <text x="48" y="182" fill="#334155" font-size="18" font-weight="normal">• Tuning blend weights on val.csv</text>
+  <text x="48" y="216" fill="#334155" font-size="18" font-weight="normal">• Unsealed test answer columns</text>
+  <line x1="235.0" y1="256" x2="235.0" y2="284" stroke="#0F766E" stroke-width="3" marker-end="url(#arrTeal)"/>
+  <rect x="36" y="292" width="398" height="172" rx="10" fill="#F0FDFA" stroke="#5EEAD4" stroke-width="1.8"/>
+  <text x="48" y="322" fill="#0F766E" font-size="18" font-weight="bold">SuperAgent Remedy:</text>
+  <text x="48" y="356" fill="#1E293B" font-size="18" font-weight="normal">✓ Physical private/ label firewall</text>
+  <text x="48" y="390" fill="#1E293B" font-size="18" font-weight="normal">✓ Inner-CV only weight/threshold rule</text>
+  <text x="48" y="424" fill="#1E293B" font-size="18" font-weight="normal">✓ AST &amp; jump-triggered leak audit</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="476" y="18" width="430" height="462" rx="16" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="2"/>
+  <path d="M 476 34 Q 476 18 492 18 L 890 18 Q 906 18 906 34 L 906 68 L 476 68 Z" fill="url(#gNavyHdr)"/>
+  <text x="691.0" y="50" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">2. Greedy Search &amp; Branch Collapse</text>
+  <rect x="492" y="84" width="398" height="168" rx="10" fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1.5"/>
+  <text x="504" y="114" fill="#991B1B" font-size="18" font-weight="bold">Problem:</text>
+  <text x="504" y="148" fill="#334155" font-size="18" font-weight="normal">• Single-family drafts lack diversity</text>
+  <text x="504" y="182" fill="#334155" font-size="18" font-weight="normal">• Naive hill-climbing stalls locally</text>
+  <text x="504" y="216" fill="#334155" font-size="18" font-weight="normal">• Parallel workers repeat failed ideas</text>
+  <line x1="691.0" y1="256" x2="691.0" y2="284" stroke="#0F766E" stroke-width="3" marker-end="url(#arrTeal)"/>
+  <rect x="492" y="292" width="398" height="172" rx="10" fill="#F0FDFA" stroke="#5EEAD4" stroke-width="1.8"/>
+  <text x="504" y="322" fill="#0F766E" font-size="18" font-weight="bold">SuperAgent Remedy:</text>
+  <text x="504" y="356" fill="#1E293B" font-size="18" font-weight="normal">✓ Orthogonal family seeding (t = 0)</text>
+  <text x="504" y="390" fill="#1E293B" font-size="18" font-weight="normal">✓ UCT &lt;-&gt; Elite + 7-op search tree</text>
+  <text x="504" y="424" fill="#1E293B" font-size="18" font-weight="normal">✓ Contrastive (+1/-1) RRF memory</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="932" y="18" width="430" height="462" rx="16" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="2"/>
+  <path d="M 932 34 Q 932 18 948 18 L 1346 18 Q 1362 18 1362 34 L 1362 68 L 932 68 Z" fill="url(#gNavyHdr)"/>
+  <text x="1147.0" y="50" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">3. Script Timeout Death Spiral</text>
+  <rect x="948" y="84" width="398" height="168" rx="10" fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1.5"/>
+  <text x="960" y="114" fill="#991B1B" font-size="18" font-weight="bold">Problem:</text>
+  <text x="960" y="148" fill="#334155" font-size="18" font-weight="normal">• Fast 15s baseline shrinks q0.8 limit</text>
+  <text x="960" y="182" fill="#334155" font-size="18" font-weight="normal">• 20–32s cap kills 5-fold GBDT/NNs</text>
+  <text x="960" y="216" fill="#334155" font-size="18" font-weight="normal">• 31/120 timeouts trigger repair loops</text>
+  <line x1="1147.0" y1="256" x2="1147.0" y2="284" stroke="#0F766E" stroke-width="3" marker-end="url(#arrTeal)"/>
+  <rect x="948" y="292" width="398" height="172" rx="10" fill="#F0FDFA" stroke="#5EEAD4" stroke-width="1.8"/>
+  <text x="960" y="322" fill="#0F766E" font-size="18" font-weight="bold">SuperAgent Remedy:</text>
+  <text x="960" y="356" fill="#1E293B" font-size="18" font-weight="normal">✓ Decouple priority vs kill ceiling</text>
+  <text x="960" y="390" fill="#1E293B" font-size="18" font-weight="normal">✓ Crash-immune ok_script estimator</text>
+  <text x="960" y="424" fill="#1E293B" font-size="18" font-weight="normal">✓ Slot-share floor (31 -> 1 timeout)</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="1388" y="18" width="430" height="462" rx="16" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="2"/>
+  <path d="M 1388 34 Q 1388 18 1404 18 L 1802 18 Q 1818 18 1818 34 L 1818 68 L 1388 68 Z" fill="url(#gNavyHdr)"/>
+  <text x="1603.0" y="50" text-anchor="middle" fill="#FFFFFF" font-size="19.5" font-weight="bold">4. Fragile Metric &amp; Blind Fusion</text>
+  <rect x="1404" y="84" width="398" height="168" rx="10" fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1.5"/>
+  <text x="1416" y="114" fill="#991B1B" font-size="18" font-weight="bold">Problem:</text>
+  <text x="1416" y="148" fill="#334155" font-size="18" font-weight="normal">• Binary metric ties (acc vs prec_macro)</text>
+  <text x="1416" y="182" fill="#334155" font-size="18" font-weight="normal">• Hard 0/1 vote loses confidence</text>
+  <text x="1416" y="216" fill="#334155" font-size="18" font-weight="normal">• Unvalidated blending overfits val</text>
+  <line x1="1603.0" y1="256" x2="1603.0" y2="284" stroke="#0F766E" stroke-width="3" marker-end="url(#arrTeal)"/>
+  <rect x="1404" y="292" width="398" height="172" rx="10" fill="#F0FDFA" stroke="#5EEAD4" stroke-width="1.8"/>
+  <text x="1416" y="322" fill="#0F766E" font-size="18" font-weight="bold">SuperAgent Remedy:</text>
+  <text x="1416" y="356" fill="#1E293B" font-size="18" font-weight="normal">✓ Task-hint + 1e-4 exact-hit disambig.</text>
+  <text x="1416" y="390" fill="#1E293B" font-size="18" font-weight="normal">✓ Stratified two-half OOS gate</text>
+  <text x="1416" y="424" fill="#1E293B" font-size="18" font-weight="normal">✓ Prob-sidecar + log_loss tie-break</text>
+</g>
+</svg>

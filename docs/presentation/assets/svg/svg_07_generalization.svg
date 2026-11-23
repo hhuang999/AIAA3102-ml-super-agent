@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="470" viewBox="0 0 1840 470">
+
+  <defs>
+    <filter id="sh" x="-4%" y="-6%" width="108%" height="118%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+    <linearGradient id="gNavyHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#112B5C"/>
+      <stop offset="100%" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <linearGradient id="gBlueHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1D4ED8"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="gTealHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0F766E"/>
+      <stop offset="100%" stop-color="#0D9488"/>
+    </linearGradient>
+    <linearGradient id="gGoldHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#92400E"/>
+      <stop offset="100%" stop-color="#B45309"/>
+    </linearGradient>
+    <linearGradient id="gPurpleHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#5B21B6"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="gRedHdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#991B1B"/>
+      <stop offset="100%" stop-color="#DC2626"/>
+    </linearGradient>
+    <marker id="arrSlate" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#475569"/>
+    </marker>
+    <marker id="arrBlue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#1D4ED8"/>
+    </marker>
+    <marker id="arrTeal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#0F766E"/>
+    </marker>
+    <marker id="arrGold" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#B45309"/>
+    </marker>
+    <marker id="arrPurple" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#6D28D9"/>
+    </marker>
+    <marker id="arrRed" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0 1.2 L 9.5 5 L 0 8.8 z" fill="#DC2626"/>
+    </marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; }
+      .mono { font-family: Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1840" height="470" fill="#FFFFFF"/>
+<g filter="url(#sh)">
+  <rect x="20" y="20" width="430" height="430" rx="14" fill="#EFF6FF" stroke="#93C5FD" stroke-width="2"/>
+  <path d="M 20 34 Q 20 20 34 20 L 436 20 Q 450 20 450 34 L 450 66 L 20 66 Z" fill="url(#gBlueHdr)"/>
+  <text x="235.0" y="50.0" text-anchor="middle" fill="#FFFFFF" font-size="18.5" font-weight="bold">1. Concurrency-Safe Tree Search</text>
+  <text x="38" y="94" fill="#1E293B" font-size="17.5" font-weight="normal">• Per-node local no_gain_count</text>
+  <text x="38" y="130" fill="#1E293B" font-size="17.5" font-weight="normal">• _after_best_finished plateau filter</text>
+  <text x="38" y="166" fill="#1E293B" font-size="17.5" font-weight="normal">• Multi-slot rank_proposals + quota</text>
+  <text x="38" y="202" fill="#1E293B" font-size="17.5" font-weight="normal">• Thread-local Dispatch.via_elite</text>
+  <text x="38" y="244" fill="#112B5C" font-size="17.2" font-weight="bold">Scope: Parallel multi-GPU search</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="476" y="20" width="430" height="430" rx="14" fill="#FAF5FF" stroke="#C4B5FD" stroke-width="2"/>
+  <path d="M 476 34 Q 476 20 490 20 L 892 20 Q 906 20 906 34 L 906 66 L 476 66 Z" fill="url(#gPurpleHdr)"/>
+  <text x="691.0" y="50.0" text-anchor="middle" fill="#FFFFFF" font-size="18.5" font-weight="bold">2. AST Patching &amp; Smart Recall</text>
+  <text x="494" y="94" fill="#1E293B" font-size="17.5" font-weight="normal">• AST import-aware SEARCH/REPLACE</text>
+  <text x="494" y="130" fill="#1E293B" font-size="17.5" font-weight="normal">• Autonomous target (data/model/train)</text>
+  <text x="494" y="166" fill="#1E293B" font-size="17.5" font-weight="normal">• CamelCase + CJK Okapi BM25 tokens</text>
+  <text x="494" y="202" fill="#1E293B" font-size="17.5" font-weight="normal">• Direct failed-child (-1) prioritization</text>
+  <text x="494" y="244" fill="#112B5C" font-size="17.2" font-weight="bold">Scope: Tabular, Vision, Text, Multi.</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="932" y="20" width="430" height="430" rx="14" fill="#F0FDFA" stroke="#5EEAD4" stroke-width="2"/>
+  <path d="M 932 34 Q 932 20 946 20 L 1348 20 Q 1362 20 1362 34 L 1362 66 L 932 66 Z" fill="url(#gTealHdr)"/>
+  <text x="1147.0" y="50.0" text-anchor="middle" fill="#FFFFFF" font-size="18.5" font-weight="bold">3. Stratified OOS &amp; Sidecar Gate</text>
+  <text x="950" y="94" fill="#1E293B" font-size="17.5" font-weight="normal">• stratified_halves class-balanced CV</text>
+  <text x="950" y="130" fill="#1E293B" font-size="17.5" font-weight="normal">• val/test_probabilities.csv sidecars</text>
+  <text x="950" y="166" fill="#1E293B" font-size="17.5" font-weight="normal">• +2 pair greedy escapes 1:1 vote lock</text>
+  <text x="950" y="202" fill="#1E293B" font-size="17.5" font-weight="normal">• Anti-val-snooping AST/risk checks</text>
+  <text x="950" y="244" fill="#112B5C" font-size="17.2" font-weight="bold">Scope: Binary &amp; K-class tasks</text>
+</g>
+<g filter="url(#sh)">
+  <rect x="1388" y="20" width="430" height="430" rx="14" fill="#FFFBEB" stroke="#FCD34D" stroke-width="2"/>
+  <path d="M 1388 34 Q 1388 20 1402 20 L 1804 20 Q 1818 20 1818 34 L 1818 66 L 1388 66 Z" fill="url(#gGoldHdr)"/>
+  <text x="1603.0" y="50.0" text-anchor="middle" fill="#FFFFFF" font-size="18.5" font-weight="bold">4. Orthogonal Seed &amp; Slot Scaling</text>
+  <text x="1406" y="94" fill="#1E293B" font-size="17.5" font-weight="normal">• assign_draft_hypotheses() at t=0</text>
+  <text x="1406" y="130" fill="#1E293B" font-size="17.5" font-weight="normal">• Decoupled slot_share kill ceiling</text>
+  <text x="1406" y="166" fill="#1E293B" font-size="17.5" font-weight="normal">• Zero-LLM promote rung continuation</text>
+  <text x="1406" y="202" fill="#1E293B" font-size="17.5" font-weight="normal">• 541 offline tests verified cleanly</text>
+  <text x="1406" y="244" fill="#112B5C" font-size="17.2" font-weight="bold">Scope: Any wall-clock &amp; GPU setup</text>
+</g>
+</svg>
