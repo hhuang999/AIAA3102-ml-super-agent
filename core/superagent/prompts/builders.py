@@ -141,7 +141,7 @@ STAGE_SPECIFIC = {
 
 
 def draft_stage(
-    task_desc: str, data_preview: str, root_summary: str, requirements: str, stage: str, previous: list[tuple[str, str, str]], mode: str
+    task_desc: str, data_preview: str, root_summary: str, requirements: str, stage: str, previous: list[tuple[str, str, str]], mode: str, *, declared_split: bool = False
 ) -> tuple[str, str]:
     system = DRAFT_SYSTEM + f" You are now responsible only for the {stage} step: write only this step's code, not the whole solution."
     if previous:
@@ -149,6 +149,11 @@ def draft_stage(
     else:
         prev = "This is the first step."
     specific = STAGE_SPECIFIC[stage]
+    if stage == "train_eval" and declared_split:
+        specific = specific.replace(
+            "The last printed line is the score marker.",
+            "Write ./out/val_predictions.csv, ./out/predictions.csv, ./out/model/inference.json and support --predict-only without reading validation labels in predict-only mode.",
+        )
     if stage == "data_prep" and mode in ("catalog", "open"):
         specific += " " + policy.DATA_PREP_PRETRAINED_HINT
     if stage == "model_def":
@@ -173,23 +178,28 @@ First 2 to 3 sentences describing what this step does, then exactly one ```pytho
 
 
 def draft_integrator(
-    task_desc: str, data_preview: str, root_summary: str, requirements: str, steps: list[tuple[str, str, str]]
+    task_desc: str, data_preview: str, root_summary: str, requirements: str, steps: list[tuple[str, str, str]], *, declared_split: bool = False
 ) -> tuple[str, str]:
     system = ("You are good at writing clean, efficient machine learning code. You have received three pieces of code, "
               "each responsible for one part of a pipeline. Merge them into one coherent script that runs directly.")
     steps_text = "\n\n".join(f"## Step: {name}\nPlan: {plan}\n{code_block(code)}" for name, plan, code in steps)
+    final_output_rule = (
+        "- The final code must write ./out/val_predictions.csv, ./out/predictions.csv, save the standalone model package under ./out/model/ (with inference.json), and support --predict-only without computing validation scores."
+        if declared_split else
+        "- The final code must print the score marker, write the prediction file and save the model files."
+    )
     user = join_sections(
         *base_materials(task_desc, data_preview),
         attempts_section("Existing drafts (attempts summary)", root_summary),
         section("Steps to merge", steps_text),
         requirements,
-        """# Merging rules
+        f"""# Merging rules
 - Merge into a single runnable script.
 - You are the integrator, not the designer: integrate the steps faithfully and do not introduce models, algorithms or practices that are not in the steps.
 - Unify variable names across steps. Remove duplicate imports and definitions.
 - When steps conflict, the earlier step's design wins.
 - Execution order: data processing, model definition, training and evaluation.
-- The final code must print the score marker, write the prediction file and save the model files.
+{final_output_rule}
 - Assume none of the steps has been executed before: do not skip any step and do not read intermediate artefacts.""",
         """# Output format
 First 2 to 3 sentences on how you merged the steps, then exactly one ```python code block containing the complete script.""",
@@ -488,6 +498,7 @@ new code
 def patch_prompt(
     op: OpPrompt, plan_text: str, data_preview: str, code: str, trimmed_output: str, retry_note: str = ""
 ) -> tuple[str, str]:
+    from ..helper_api import reference
     system = "Modify an existing solution according to the given improvement plan so that its test performance improves. " + op.patch_system_focus
     hint = f"\n- {op.patch_hint}" if op.patch_hint else ""
     reqs = f"""# Requirements
@@ -500,15 +511,16 @@ def patch_prompt(
 - The modified file must still run.
 - Never output the whole file. A reply without patch blocks is rejected."""
     user = join_sections(
-        retry_note,
-        section("Improvement plan", plan_text),
-        section("Data preview", data_preview),
-        current_code_section(code),
-        output_section(trimmed_output),
-        op.patch_extra,
+        reference(),
         reqs,
         PATCH_FORMAT,
         "# Output format\nYou may start with a few sentences of explanation, then the patch blocks.",
+        section("Data preview", data_preview),
+        op.patch_extra,
+        section("Improvement plan", plan_text),
+        output_section(trimmed_output),
+        current_code_section(code),
+        retry_note,
     )
     return system, user
 
@@ -521,19 +533,25 @@ def repair_patch_prompt(op: OpPrompt, data_preview: str, code: str, trimmed_outp
 - Every SEARCH part needs a REPLACE part. Do not put other text between blocks.
 - The modified file must still run.
 - Never output the whole file. A reply without patch blocks is rejected."""
-    user = join_sections(retry_note, *op.materials, op.requirements, reqs, PATCH_FORMAT,
-                         "# Output format\nFirst two or three sentences explaining the fix, then the patch blocks.")
+    user = join_sections(op.requirements, reqs, PATCH_FORMAT,
+                         "# Output format\nFirst two or three sentences explaining the fix, then the patch blocks.",
+                         *op.materials, retry_note)
     return op.system, user
 
 
 # --------------------------------------------------------------------------- review / assessment roles
 
-def reviewer(task_desc: str, code: str, mode: str, run_limit_secs: float) -> tuple[str, str]:
+def reviewer(task_desc: str, code: str, mode: str, run_limit_secs: float, *, declared_split=False) -> tuple[str, str]:
+    from ..helper_api import reference
     system = "You are a senior data-science code reviewer. You only look for data leakage and critical correctness problems."
     trust = policy.REVIEW_OFF if mode == "off" else policy.REVIEW_TRUST_CATALOG
+    output_check = (
+        "Predict-only needs files outside inference_inputs, reads validation labels, calculates a score, "
+        "or cannot write both prediction files from the saved model package."
+        if declared_split else "The score marker line is missing."
+    )
     user = join_sections(
-        section("Task description", task_desc),
-        section("Code to review", code_block(code)),
+        reference(),
         f"""# Environment facts you must trust without question
 - ./data, ./work and ./out all exist. Do not question paths.
 - The prediction file location is ./out/predictions.csv.
@@ -541,9 +559,10 @@ def reviewer(task_desc: str, code: str, mode: str, run_limit_secs: float) -> tup
 - The script's time limit is {int(run_limit_secs)} seconds.
 - {trust if mode != "off" else "There is no network access."}""",
         (f"# Strictly forbidden\n- {trust}" if mode != "off" else f"# Pretrained policy\n- {trust}"),
-        """# Highest priority: data leakage
+        f"""# Highest priority: data leakage
 - Processing order: scaling, dimensionality reduction, target encoding or similar transforms fitted BEFORE the split, or over-sampling before the split. This must be fixed. Correct order: split first, fit on the training part only, then transform each part.
 - Split strategy: raise it only when the split method mathematically violates the dependency structure of the data (for example samples of the same group on both sides, or time-ordered data shuffled randomly).
+- Validation snooping: fitting or grid-searching ensemble blend weights, stacking meta-learners, or classification thresholds directly on the final validation labels behind the reported score. Fix by fitting weights/thresholds on inner training folds or an inner training split only.
 
 # Second priority: critical correctness
 - The metric used differs from the one the task requires.
@@ -551,7 +570,8 @@ def reviewer(task_desc: str, code: str, mode: str, run_limit_secs: float) -> tup
 - The test set is predicted with the last-epoch model instead of the model with the best validation performance.
 - API pitfalls: LightGBM early stopping must use callbacks; XGBoost early_stopping_rounds belongs to the constructor; AdamW comes from torch.optim.
 - Progress bars or per-batch logging are used.
-- The score marker line is missing; the prediction file path is wrong; model files are not saved.
+- {output_check}
+- The prediction file path is wrong or model files are not saved.
 
 # Decision rule
 Ask for a revision ONLY if you found one of the concrete problems above. If you found no concrete logic problem, pass. The default is pass.
@@ -565,6 +585,8 @@ original lines copied verbatim
 =======
 fixed lines
 >>>>>>> REPLACE""",
+        section("Task description", task_desc),
+        section("Code to review", code_block(code)),
     )
     return system, user
 

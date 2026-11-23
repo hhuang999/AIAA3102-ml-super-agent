@@ -99,10 +99,13 @@ def analyze(core_out: Path, grades: Path | None = None, catalog: Path | None = N
 
     llm = summ["resources"]["llm"]
     emb = summ["resources"]["embedding"]
+    llm_cost = llm.get("cost")
+    emb_cost = float((emb or {}).get("cost") or 0.0)
+    cost_per_node = None if llm_cost is None else round((float(llm_cost) + emb_cost) / max(1, len(nodes)), 6)
     res["usage"] = {"llm_calls": llm["calls"], "failed_calls": llm["failed_calls"], "prompt_tokens": llm["prompt_tokens"],
                     "completion_tokens": llm["completion_tokens"], "reasoning_tokens": llm["reasoning_tokens"],
-                    "llm_cost": llm["cost"], "currency": llm["currency"], "embedding": emb, "exec": summ["resources"]["exec"],
-                    "cost_per_node": round((llm["cost"] + emb["cost"]) / max(1, len(nodes)), 6),
+                    "llm_cost": llm_cost, "currency": llm["currency"], "embedding": emb, "exec": summ["resources"]["exec"],
+                    "cost_per_node": cost_per_node,
                     "by_agent": {k: {"calls": v["calls"], "cost": v["cost"]} for k, v in llm["by_agent"].items()}}
     res["pretrained"] = _pretrained(nodes, catalog)
     for key in ("final", "diagnostics", "control"):

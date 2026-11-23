@@ -106,18 +106,35 @@ class CostCapRule(Rule):
         self.currency = str(block["currency"])
         self.rate = float(block["rate_to_cap_currency"])
         self.warn_fraction = float(block["warn_fraction"])
+        self.stop_on_warning = bool(block.get("stop_on_warning", False))
+
+    @property
+    def warn_limit(self) -> float:
+        return self.warn_fraction * self.limit
 
     def capped_cost(self, state: RunState) -> float:
         return state.cost * self.rate
 
-    def evaluate(self, state: RunState) -> Decision:
-        cost = self.capped_cost(state)
+    def evaluate(self, state: RunState, *, extra_known_cost: float = 0.0) -> Decision:
+        cost = max(self.capped_cost(state), float(extra_known_cost) * self.rate)
+        warn_limit = self.warn_limit
         per_step = cost / max(1, state.nodes_total)
         projected = cost + per_step * max(1, state.active_tasks)
-        details = {"cost": round(cost, 4), "projected": round(projected, 4), "limit": self.limit, "currency": self.currency}
+        details = {
+            "cost": round(cost, 4),
+            "projected": round(projected, 4),
+            "warn_limit": round(warn_limit, 4),
+            "limit": self.limit,
+            "currency": self.currency,
+            "stop_on_warning": self.stop_on_warning,
+        }
+        if self.limit > 0 and cost >= self.limit:
+            return Decision(True, "cost_limit", details)
+        if self.limit > 0 and cost >= warn_limit and self.stop_on_warning:
+            return Decision(True, "cost_warning", details)
         if self.limit > 0 and projected >= self.limit:
             return Decision(True, "cost_limit", details)
-        if self.limit > 0 and cost >= self.warn_fraction * self.limit:
+        if self.limit > 0 and cost >= warn_limit:
             return Decision(False, "cost_warning", details)
         return Decision(False, "within_limit", details)
 

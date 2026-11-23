@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 from sklearn.model_selection import train_test_split
 
 SEED = 0
@@ -38,7 +39,7 @@ def _split(df: pd.DataFrame, label: str, test_size: float) -> tuple[pd.DataFrame
     return tr.reset_index(drop=True), te.reset_index(drop=True)
 
 
-def make_tabular(out: Path, small: bool) -> None:
+def make_tabular(out: Path, small: bool, contract: bool = False) -> None:
     from sklearn.datasets import load_breast_cancer, load_iris
 
     if small:
@@ -57,6 +58,13 @@ def make_tabular(out: Path, small: bool) -> None:
         goal = "Predict whether each tumour is benign (1) or malignant (0) from 30 numeric features computed from a digitised image."
     df.insert(0, "id", [f"s{i:04d}" for i in range(len(df))])
     tr, te = _split(df, label, 0.3)
+    extra = {}
+    validation = ""
+    if contract:
+        tr, val = _split(tr, label, 0.25)
+        extra["val.csv"] = val.drop(columns=[label]).to_csv(index=False).encode()
+        extra["val_labels.csv"] = val[["id", label]].to_csv(index=False).encode()
+        validation = "- `val.csv`: fixed validation features. Core scores these predictions using `val_labels.csv`.\n"
     if metric == "accuracy":
         sample = pd.DataFrame({"id": te["id"], label: tr[label].iloc[0]})
         fmt = f"a CSV with columns `id` and `{label}` (the predicted class name)"
@@ -71,7 +79,7 @@ def make_tabular(out: Path, small: bool) -> None:
 ## Data
 - `train.csv`: training samples with an `id` column, the feature columns and the target column `{label}`.
 - `test.csv`: test samples with the same columns except `{label}`.
-- `sample_predictions.csv`: an example of the required submission format.
+{validation}- `sample_predictions.csv`: an example of the required submission format.
 
 ## Evaluation
 {metric_txt}
@@ -79,7 +87,18 @@ def make_tabular(out: Path, small: bool) -> None:
 ## Submission
 Predict every row of `test.csv` and write {fmt}.
 """
-    _write_task(out / name, desc, tr, te.drop(columns=[label]), te[["id", label]], sample)
+    root = out / name
+    _write_task(root, desc, tr, te.drop(columns=[label]), te[["id", label]], sample, extra)
+    if contract:
+        spec = {
+            "version": 1,
+            "metric": "accuracy",
+            "classes": sorted(map(str, tr[label].unique())),
+            "sample": "sample_predictions.csv",
+            "inference_inputs": ["val.csv", "test.csv", "sample_predictions.csv"],
+            "validation": {"format": "csv", "path": "val_labels.csv", "id": "id", "label": label},
+        }
+        (root / "task/task.yaml").write_text(yaml.safe_dump(spec), encoding="utf-8")
 
 
 def make_image(out: Path) -> None:
@@ -153,11 +172,12 @@ def main() -> None:
     ap.add_argument("--out", default="example_tasks")
     ap.add_argument("--tasks", nargs="+", default=["tabular_small", "tabular", "image", "text"],
                     choices=["tabular_small", "tabular", "image", "text"])
+    ap.add_argument("--contract", action="store_true", help="Add a fixed, independently scored split to tabular_small")
     args = ap.parse_args()
     out = Path(args.out)
     for t in args.tasks:
         if t == "tabular_small":
-            make_tabular(out, small=True)
+            make_tabular(out, small=True, contract=args.contract)
         elif t == "tabular":
             make_tabular(out, small=False)
         elif t == "image":

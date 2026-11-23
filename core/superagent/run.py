@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import platform
 import random
 import signal
 import sys
@@ -20,21 +21,25 @@ from typing import Any
 from . import report
 from .bookkeeping import INTERFACE_VERSION, update_rankings, write_search_tree, write_status
 from .catalog import build_catalog, offline_env
+from .contract import load_spec
+from .publication import latest
 from .config import build_config, dump_config
 from .context import LockedRandom, OutputPaths, RunContext
 from .control import build_state, detect_gpus, load_controller_class, make_controller
+from .control.hardware import cuda_mask
 from .errors import InvalidInputError, LLMUnavailableError, StructuredOutputError
+from .llm.ledger import PermanentCall
 from .executor import Executor
-from .experience import ExperienceStore, make_embedder, vector_key_missing
+from .experience import ExperienceStore, make_embedder
 from .llm import Field
-from .llm.gateway import LLMGateway, OpenAITransport, abort_decision
+from .llm.gateway import ASSESSMENT_ROLES, LLMGateway, OpenAITransport, abort_decision
 from .profiler import SAMPLE_NAME, profile
 from .prompts import builders
 from .prompts.blocks import TASK_ALIGNMENT_RULES
 from .search import SearchController
 from .task_io import check_output_dir, check_task_dir, prepare_data
 from .tree import Direction, SearchTree
-from .utils import atomic_write_json, atomic_write_text, load_env_file, now_iso
+from .utils import atomic_write_json, atomic_write_text, load_env_file, new_id, now_iso
 
 log = logging.getLogger("superagent")
 
@@ -101,7 +106,14 @@ def _clean_description(gw: LLMGateway, raw: str) -> str:
         cleaned = res.content.strip()
         if not cleaned or res.truncated:
             raise ValueError("empty or truncated cleaned description")
+    except PermanentCall:
+        if getattr(gw, "endpoint_failure", None):
+            raise
+        log.warning("description cleaning failed (permanent); using the original text")
+        cleaned = raw.strip()
     except Exception as exc:  # noqa: BLE001
+        if getattr(gw, "endpoint_failure", None):
+            raise PermanentCall(gw.endpoint_failure) from exc
         log.warning("description cleaning failed (%s); using the original text", exc)
         cleaned = raw.strip()
     return cleaned + "\n\n" + TASK_ALIGNMENT_RULES
@@ -114,7 +126,13 @@ def _judge_direction(gw: LLMGateway, task_desc: str) -> bool:
             obj = gw.structured("direction_judge", system, user, DIRECTION_SCHEMA)
             log.info("metric direction judged by the LLM: %s (%s)", obj["goal"], str(obj["explanation"])[:200])
             return obj["goal"] == "maximize"
+        except PermanentCall:
+            if getattr(gw, "endpoint_failure", None):
+                raise
+            log.warning("direction judgement rejected by endpoint")
         except (StructuredOutputError, LLMUnavailableError) as exc:
+            if getattr(gw, "endpoint_failure", None):
+                raise PermanentCall(gw.endpoint_failure) from exc
             log.warning("direction judgement failed: %s", exc)
     log.warning("could not determine the metric direction; assuming higher is better")
     return True
@@ -147,22 +165,28 @@ def run_task(
     handlers = _setup_logging(paths.run_log)
     intr = _interrupt or _Interrupt()
     ctx: RunContext | None = None
+    async_transport = None
+    gateway = None
     try:
         try:
+            load_env_file(Path.cwd() / ENV_FILE_NAME)
             cli = {"time_limit_secs": time_limit_secs, "max_steps": max_steps, "seed": seed, "num_gpus": num_gpus,
                    "num_cpus": num_cpus, "parallel": parallel, "keep_artifacts_top_k": keep_artifacts_top_k,
                    "pretrained_mode": pretrained_mode}
             cfg = build_config(config, cli_overrides=cli)
+            formal = cfg["verification"]["runner"] == "bubblewrap"
+            mask = cuda_mask()
+            if mask is not None and cfg["resources"]["num_gpus"] > len(mask):
+                log.warning("limiting resources.num_gpus to the %d device(s) in CUDA_VISIBLE_DEVICES", len(mask))
+                cfg["resources"]["num_gpus"] = len(mask)
             task = check_task_dir(task_dir)
-            load_env_file(Path.cwd() / ENV_FILE_NAME)
             key_env = str(cfg["llm"]["api_key_env"])
             api_key = os.environ.get(key_env, "")
-            if not api_key:
+            if not api_key and not formal:
                 raise InvalidInputError(f"environment variable {key_env} is not set (it can also be put in a .env file)")
-            missing = vector_key_missing(cfg["experience"], os.environ)
-            if missing:
-                raise InvalidInputError(f"environment variable {missing} is not set; it is needed because "
-                                        "experience.vector.backend is 'api' (set it, or use backend 'local')")
+            if num_cpus is not None and parallel is None and int(cfg["resources"]["num_cpus"]) >= 1:
+                if int(cfg["resources"]["parallel"]) > int(cfg["resources"]["num_cpus"]):
+                    cfg["resources"]["parallel"] = int(cfg["resources"]["num_cpus"])
             if int(cfg["resources"]["num_cpus"]) < int(cfg["resources"]["parallel"]):
                 raise InvalidInputError("resources.num_cpus must be at least resources.parallel")
             load_controller_class(str(cfg["control"]["controller"]))
@@ -180,9 +204,15 @@ def run_task(
         prepare_data(task / "data", paths.prepared)
         deadline = process_start + float(cfg["run"]["time_limit_seconds"])
         reserve = float(cfg["run"]["finalize_reserve_seconds"])
+        if cfg["control"]["controller"]=="adaptive":
+            reserve=min(reserve,.1*float(cfg["run"]["time_limit_seconds"]))
 
         def should_abort(role: str) -> bool:
-            return abort_decision(role, deadline - time.monotonic(), reserve, intr.interrupted, intr.hard_event.is_set())
+            if formal:
+                return intr.stop_event.is_set()
+            if ctx is not None and role not in ASSESSMENT_ROLES and (ctx.generation_window_expired() or intr.stop_event.is_set()):
+                return True
+            return abort_decision(role, deadline - time.monotonic(), ctx.reserve if ctx is not None else reserve, intr.interrupted, intr.hard_event.is_set())
 
         runs_dir = paths.runs
 
@@ -191,31 +221,81 @@ def run_task(
             d.mkdir(parents=True, exist_ok=True)
             return d
 
-        tr = OpenAITransport(cfg["llm"]["base_url"], api_key, float(cfg["llm"]["request_timeout_seconds"]))
-        gateway = LLMGateway(cfg["llm"], paths.llm_calls, tr, should_abort=should_abort, prompt_log_dir=prompt_dir)
+        run_id = new_id() if formal else None
+        if formal:
+            from .llm.async_transport import AsyncDeepSeekTransport
 
+            slots = cfg["llm"]["max_in_flight"] or cfg["resources"]["parallel"]
+            async_transport = AsyncDeepSeekTransport(cfg["llm"]["base_url"], api_key, cfg["llm"]["request_limits"], slots)
+            tr = async_transport
+        else:
+            tr = OpenAITransport(cfg["llm"]["base_url"], api_key, float(cfg["llm"]["request_timeout_seconds"]))
+        gateway = LLMGateway(cfg["llm"], paths.llm_calls, tr, should_abort=should_abort, prompt_log_dir=prompt_dir, run_id=run_id)
+
+        cap=cfg["control"]["cost_cap"]
+        if not formal and cap["mode"]=="enforce" and cap["limit"]>0:
+            gateway.ledger.limit=cap["limit"]/cap["rate_to_cap_currency"]
         raw_desc = (task / "description.md").read_text(encoding="utf-8", errors="replace")
-        task_desc = _clean_description(gateway, raw_desc)
-        if higher_is_better is not None:
+        spec = load_spec(task, paths.prepared)
+        visible = paths.prepared
+        manifest = None
+        if formal:
+            if spec is None:
+                raise InvalidInputError("single-model runs require task.yaml v1 and declared validation truth")
+            from .inputs import prepare_inputs
+
+            manifest, prof = prepare_inputs(
+                task, paths.prepared, spec, out / "input_views", profile_config=cfg["profiler"],
+            )
+            visible = out / "input_views/training"
+        if manifest:
+            import json
+
+            task_desc = (
+                raw_desc + "\nUse data/input_manifest.json and this task-owned contract:\n"
+                + json.dumps({"metric": spec.metric, "classes": spec.classes, "columns": spec.columns,
+                              "probability": spec.probability, "input_manifest": manifest.payload()}, ensure_ascii=False)
+                + "\nEmit out/val_predictions.csv and out/predictions.csv. "
+                "Validation IDs must cover the fixed split and test rows must follow the sample order. "
+                "The independent scorer owns the validation truth. "
+                "Your --predict-only path receives only bound val/test inputs and the fitted model package."
+            )
+        else:
+            task_desc = raw_desc + "\n" + spec.prompt if spec else _clean_description(gateway, raw_desc)
+        if spec is not None:
+            if not spec.inference_inputs and not formal:
+                raise InvalidInputError("task.yaml must declare inference_inputs for independent artifact verification")
+            if higher_is_better is not None and higher_is_better != spec.maximize:
+                raise InvalidInputError("CLI metric direction contradicts task.yaml")
+            hib, source = spec.maximize, "task_contract"
+            atomic_write_json(paths.logs / "task_contract.json", {"sha256":spec.signature, "metric":spec.metric,
+                              "validation_rows":len(spec.truth), "test_rows":len(spec.test_ids)})
+        elif higher_is_better is not None:
             hib, source = bool(higher_is_better), "cli"
         else:
             hib, source = _judge_direction(gateway, task_desc), "llm"
         direction = Direction(hib)
 
-        prof = profile(paths.prepared, cfg["profiler"])
+        if not formal:
+            prof = profile(visible, cfg["profiler"])
         sample = paths.prepared / SAMPLE_NAME
-        sample_path = sample if sample.exists() else None
-        if sample_path is None:
+        sample_path = sample if sample.exists() and spec is None else None
+        if sample_path is None and spec is None:
             log.warning("data/%s not found: prediction file format checks are skipped", SAMPLE_NAME)
         mode = str(cfg["pretrained"]["mode"])
         local_dir = str(cfg["pretrained"]["local_dir"])
-        cat = build_catalog(mode, local_dir, prof.modalities)
+        cat = build_catalog("catalog" if formal and mode != "off" else mode, local_dir, prof.modalities)
+        from .knowledge import read_cards
+        if not formal:
+            cards = read_cards(task, prof.modalities)
+            if cards:
+                cat.text += "\n\nTask method cards:\n" + cards
         log.info("detected modalities: %s; catalog entries shown: %d", prof.modalities or "none", len(cat.entries))
 
         experience = None
         if cfg["experience"]["enabled"]:
             embedder = make_embedder(cfg["experience"], local_dir, paths.embedding_calls)
-            experience = ExperienceStore(cfg["experience"], paths.records, embedder)
+            experience = ExperienceStore(cfg["experience"], paths.records, embedder, background=True)
         tree = SearchTree(direction)
         executor = Executor(paths.runs, paths.prepared, int(cfg["resources"]["parallel"]), int(cfg["resources"]["num_cpus"]),
                             int(cfg["resources"]["num_gpus"]), offline_env(mode, local_dir, str(cfg["pretrained"]["hub_endpoint"])))
@@ -224,13 +304,77 @@ def run_task(
                          gateway=gateway, executor=executor, experience=experience, task_desc=task_desc,
                          data_preview=prof.preview, catalog_text=cat.text, modalities=prof.modalities,
                          sample_path=sample_path, rng=rng, process_start=process_start, started_at=started_at,
-                         stop_event=intr.stop_event, hard_event=intr.hard_event)
+                         stop_event=intr.stop_event, hard_event=intr.hard_event, catalog_entries=list(cat.entries))
         if intr.interrupted:
             ctx.stop_reason = "interrupted"
+        ctx.task_spec = spec
+        from .llm.ledger import fingerprint
+        if formal:
+            from importlib.metadata import PackageNotFoundError, version
+            from dataclasses import asdict
+
+            from .catalog import match_methods, render, stage_method_assets
+            from .inputs import build_task_facts
+            from .isolation import Bubblewrap
+            from .knowledge import load_cards
+            from .training import digest
+
+            versions = {}
+            for package in ("superagent", "numpy", "pandas", "scikit-learn", "Pillow", "tfrecord", "joblib",
+                            "torch", "torchvision", "timm", "transformers", "sentence-transformers",
+                            "lightgbm", "xgboost", "catboost", "tabicl"):
+                try:
+                    versions[package] = version(package)
+                except PackageNotFoundError:
+                    continue
+            facts = build_task_facts(
+                spec,
+                manifest,
+                {"modalities": prof.modalities, "dependencies": versions, "num_gpus": int(cfg["resources"]["num_gpus"])},
+                run_id,
+            )
+            worktree = Path(__file__).parent
+            runtime_sha = fingerprint([(file.relative_to(worktree).as_posix(), digest(file))
+                for file in sorted(worktree.rglob("*")) if file.is_file() and file.suffix in (".py", ".yaml")])
+            facts["runtime_sha256"] = runtime_sha
+            facts["catalog_sha256"] = digest(worktree / "resources/method_catalog.yaml")
+            matches = match_methods(facts, cat, load_cards(task, prof.modalities), local_dir=local_dir)
+            eligible = [match for match in matches if match.eligible]
+            drafts = eligible
+            assets = stage_method_assets(drafts, out / "method_assets", local_dir)
+            methods = [
+                {**{key: value for key, value in asdict(m).items() if key != "entry"},
+                 "weights_sha256": m.entry.get("weight_hashes") if m.eligible else None}
+                for m in matches
+            ]
+            facts["methods"] = methods
+            atomic_write_json(paths.logs / "method_matches.json", methods)
+            ctx.catalog_text = render([m.entry for m in drafts], "catalog" if mode != "off" else mode)
+            task_notes = [m for m in eligible if m.entry.get("method")]
+            if task_notes:
+                ctx.catalog_text += "\nTask methods:\n" + "\n".join(
+                    f"{m.key}: {m.hypothesis}. Avoid: {m.entry['counterexample']}. Source: {m.source}" for m in task_notes[:6]
+                )
+            ctx.flags.update(formal=True, input_manifest=manifest, task_facts=facts,
+                runtime_environment={"schema_version": 1, "python": platform.python_version(), "packages": versions,
+                                     "runtime_sha256": runtime_sha, "catalog_sha256": facts["catalog_sha256"]},
+                publish_lock=threading.Lock(), artifact_leases=set(), draft_methods=drafts)
+            atomic_write_json(paths.logs / "task_facts.json", facts)
+            executor.isolation = Bubblewrap(
+                visible,
+                out / "input_views/inference",
+                task / "data",
+                assets=assets,
+                num_gpus=int(cfg["resources"]["num_gpus"]),
+            )
+        # The prepared dataset is stable for the lifetime of this run; promotions never cross runs.
+        ctx.flags["trial_environment"]=fingerprint([str(out),spec.signature if spec else raw_desc,
+            mode,[(e["id"],e.get("example"),e.get("weight_hashes")) for e in cat.entries],cfg["run"]["seed"]])
         intr.ctx = ctx
         ctx.gpu_info = detect_gpus()
         ctx.control = make_controller(ctx)
-        ctx.control.start(build_state(ctx))
+        if not formal:
+            ctx.control.start(build_state(ctx))
         log.info("controller: %s", ctx.control.name)
         atomic_write_text(paths.logs / "task_description_clean.md", task_desc)
         write_search_tree(ctx)
@@ -244,7 +388,8 @@ def run_task(
             ctx.stop_reason = ctx.stop_reason or "error"
         ctx.stop_reason = controller.stop_reason() if ctx.stop_reason is None else ctx.stop_reason
         return _finalize(ctx)
-    except InvalidInputError:
+    except InvalidInputError as exc:
+        _bare_status(out, "invalid_input", str(exc), started_at, time.monotonic() - process_start)
         raise
     except Exception as exc:  # noqa: BLE001
         log.error("fatal error: %s\n%s", exc, traceback.format_exc())
@@ -256,6 +401,12 @@ def run_task(
         except Exception:  # noqa: BLE001
             return {"status": "failed", "error": str(exc)}
     finally:
+        if gateway is not None:
+            gateway.close()
+        elif async_transport is not None:
+            async_transport.close()
+        if ctx is not None and ctx.experience is not None:
+            ctx.experience.close()
         for h in handlers:
             log.removeHandler(h)
             h.close()
@@ -275,7 +426,7 @@ def _finalize(ctx: RunContext) -> dict[str, Any]:
     with ctx.io_lock:
         ctx.flags["finalized"] = True  # workers still running no longer write any file
     try:
-        if ctx.cfg["ensemble"]["enabled"]:
+        if ctx.cfg["ensemble"]["enabled"] and getattr(ctx.control,"name",None)!="adaptive":
             from .ensemble import run_ensemble
 
             with ctx.tree.lock:
@@ -288,7 +439,12 @@ def _finalize(ctx: RunContext) -> dict[str, Any]:
         ens_block = {"available": False, "primary_size": None, "strategy": None, "members": [], "error": str(exc)}
     final_block: dict[str, Any] | None = None
     try:
-        if ctx.cfg["final"]["enabled"] and ctx.tree.best is not None:
+        if ctx.flags.get("formal"):
+            final_block = latest(ctx.paths.root)
+            receipt = ctx.paths.logs / "publication.json"
+            if final_block and (not receipt.exists() or latest_receipt_id(receipt) != final_block["version_id"]):
+                atomic_write_json(receipt, {**final_block, "recovered": True})
+        elif ctx.cfg["final"]["enabled"] and ctx.tree.best is not None:
             final_block = _write_final(ctx)
     except Exception as exc:  # noqa: BLE001
         log.error("could not write final/: %s", exc)
@@ -301,11 +457,31 @@ def _finalize(ctx: RunContext) -> dict[str, Any]:
         report.write_summary(ctx, ens_block, final_block)
     except Exception as exc:  # noqa: BLE001
         log.error("could not write the run summary: %s", exc)
-    status = "success" if ctx.tree.best is not None else "no_valid_solution"
+    ledger=getattr(ctx.gateway,"ledger",None)
+    if ledger and not ctx.flags.get("formal"):
+        accounting = ledger.summary()
+        accounting.update(ctx.executor.utilization(ctx.process_start, time.monotonic()))
+        with ctx.tree.lock:
+            accounting["unfinished_nodes"] = [{"id":n.id,"kind":n.kind,"parent":n.parent.id,"rung":n.rung}
+                for n in ctx.tree.by_id.values() if not n.is_root and not n.in_tree]
+            accounting["unfinished_steps"] = list(ctx.flags.get("unfinished_steps", []))
+            accounting["active_leases"] = sorted(getattr(ctx.control,"leases",()))
+        atomic_write_json(ctx.paths.logs / "accounting.json",accounting)
+    final_block = latest(ctx.paths.root) or final_block
+    if final_block and final_block.get("kind")=="ensemble":
+        ens_block={"available":True,"strategy":final_block.get("method")}
+    status = ("success" if final_block and final_block.get("available") else
+              "failed" if ctx.tree.best is not None else "no_valid_solution")
     payload = write_status(ctx, status, None, bool(ens_block and ens_block.get("available")), final_block)
     log.info("finished: status=%s stop_reason=%s best=%s", status, ctx.stop_reason,
              ctx.tree.best.score if ctx.tree.best else None)
     return payload
+
+
+def latest_receipt_id(path):
+    import json
+
+    return json.loads(path.read_text(encoding="utf-8")).get("version_id")
 
 
 def _write_final(ctx: RunContext) -> dict[str, Any]:
@@ -316,7 +492,24 @@ def _write_final(ctx: RunContext) -> dict[str, Any]:
     limit = int(ctx.cfg["ensemble"]["max_candidates"])
     cands = [Candidate(rank=i, node_id=n.id, score=float(n.score), out_dir=ctx.executor.run_dir(n.id) / "out", code=n.code)
              for i, n in enumerate(top[:limit], 1) if n.score is not None]
-    info = build_final(ctx.paths.root, cands, ctx.direction.higher_is_better, ctx.cfg["final"])
+    if getattr(ctx.control,"name",None)=="adaptive":
+        import multiprocessing
+        # Heavy ensemble search and file assembly must not overrun the hard deadline.
+        # The child only switches final/ after completing the entire artifact.
+        proc=multiprocessing.get_context("spawn").Process(target=build_final,
+            args=(ctx.paths.root,cands,ctx.direction.higher_is_better,ctx.cfg["final"]),
+            kwargs={"spec":ctx.task_spec,"deadline":ctx.deadline,"task_desc":ctx.task_desc})
+        if ctx.time_left()>1 and cands:
+            proc.start()
+            proc.join(timeout=max(0,ctx.time_left()-.25))
+            if proc.is_alive():
+                proc.kill()
+                proc.join()
+            elif proc.exitcode:
+                log.warning("ensemble worker exited with code %s; keeping published result",proc.exitcode)
+        info=latest(ctx.paths.root) or {"available":False}
+    else:
+        info = build_final(ctx.paths.root, cands, ctx.direction.higher_is_better, ctx.cfg["final"], spec=ctx.task_spec, task_desc=ctx.task_desc)
     log.info("final result: %s (%s); %s", info.get("kind"), info.get("method"), info.get("reason"))
     return info
 

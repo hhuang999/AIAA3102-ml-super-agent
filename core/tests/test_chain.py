@@ -35,7 +35,7 @@ def test_no_gain_increments():
     t, d = setup_d()
     r = fresh(t, "refine", d, 0.80005)
     out = chain_control(t, r, C, 0.1, FixedRng())
-    assert d.no_gain_count == 1 and r.chain_best is d and not out.returned_to_root
+    assert r.no_gain_count == 1 and d.no_gain_count == 0 and r.chain_best is d and not out.returned_to_root
 
 
 def test_no_gain_limit_ends_chain():
@@ -85,7 +85,7 @@ def test_repair_success_below_chain_best():
     p = mk(t, "refine", d, failed=True)
     n = fresh(t, "repair", p, 0.78)
     out = chain_control(t, n, C, 0.1, FixedRng())
-    assert n.keep_going and d.no_gain_count == 1 and not out.returned_to_root
+    assert n.keep_going and n.no_gain_count == 1 and d.no_gain_count == 0 and not out.returned_to_root
 
 
 def test_forced_draft_reward_zero():
@@ -145,7 +145,7 @@ def test_backpropagate():
     for x in (r2, r1, d, t.root):
         assert x.visits == 1 and x.reward_sum == 1.0
     assert not r1.keep_going and not d.keep_going and t.root.keep_going
-    assert not d.in_progress and r1.no_gain_count == 0
+    assert not d.in_progress and r1.no_gain_count == 2
 
 
 def test_backpropagate_no_count():
@@ -155,4 +155,4 @@ def test_backpropagate_no_count():
     r2 = mk(t, "refine", r1, 0.6, keep_going=False)
     backpropagate(r2, 1.0, False)
     assert all(x.visits == 0 and x.reward_sum == 0 for x in (r2, r1, d, t.root))
-    assert not r1.keep_going and not d.in_progress and r1.no_gain_count == 0
+    assert not r1.keep_going and not d.in_progress and r1.no_gain_count == 2

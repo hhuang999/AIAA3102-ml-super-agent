@@ -1,0 +1,30 @@
+{
+  "interface_version": "1.1",
+  "task_id": "headlines_ctr_clean",
+  "modality": "text",
+  "input_format": "csv",
+  "feature_columns": [
+    "headline_A",
+    "headline_B"
+  ],
+  "target": "label_pairwise",
+  "classes": [
+    0,
+    1
+  ],
+  "metric": "accuracy",
+  "objective": "Predict which of two headlines had a higher observed click-through rate in an A/B test. label_pairwise=1 means A was higher, 0 means B was higher. Preserve the A/B order.",
+  "validation_policy": "core_default",
+  "final_choice": "final",
+  "splits": {
+    "train": {
+      "features": "train.csv"
+    },
+    "val": {
+      "features": "val.csv"
+    },
+    "test": {
+      "features": "test.csv"
+    }
+  }
+}

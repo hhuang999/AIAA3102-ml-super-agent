@@ -27,7 +27,7 @@ def test_planner_empty_changes():
     _p, errs = normalize_and_check({"rationale": "r", "components": ["model_def"], "changes": {}}, False)
     assert errs
     _p, errs = normalize_and_check({"rationale": "r", "components": ["model_def"], "changes": {}}, True)
-    assert not errs
+    assert errs
     _p, errs = normalize_and_check({"rationale": "r", "components": [], "changes": {}}, True)
     assert errs
 
@@ -96,7 +96,8 @@ def test_cumulative_retry_truncation_detected_from_markers():
 def test_cumulative_retry_all_fail():
     res, seen = run_steps("a = 1\n", [P("x", "y")] * 3)
     assert res.code is None and res.attempts == 3
-    assert seen[1][1] == NOTE_NO_MATCH
+    assert seen[1][1].startswith(NOTE_NO_MATCH)
+    assert "SEARCH:\nx\nREPLACE:\ny" in seen[1][1]
 
 
 def test_cumulative_retry_partial_accept():

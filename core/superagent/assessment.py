@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 import shutil
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+import numpy as np
 
 from .checks import check_content, check_format, head_text, read_str_csv, reconcile_score, rename_columns
 from .context import RunContext
@@ -171,8 +174,80 @@ ColumnAnswer = Callable[[Path, Path, list[str], list[str]], "list[str] | None"]
 LeakAnswer = Callable[[], "dict[str, object] | None"]
 
 
+def _classification_diagnostic(ctx: RunContext, node: Node, output: Path, info: dict[str, object]) -> None:
+    spec = ctx.task_spec
+    assert spec is not None
+
+    def labels(folder: Path):
+        predictions = spec.predictions(folder / "val_predictions.csv", spec.truth.index, ordered=False)
+        return np.asarray(spec.classes)[predictions.argmax(1)] if spec.probability else predictions
+
+    new = labels(output)
+    truth = spec.truth.to_numpy()
+    counts = Counter(new)
+    largest = counts.most_common(1)[0][1]
+    majority = Counter(truth).most_common(1)[0][1]
+    node.output += (
+        f"\n[superagent checker] Model predicted {len(counts)} of {len(spec.classes)} declared classes. "
+        f"The most frequent class accounts for {largest}/{len(new)} validation predictions. "
+        f"The majority-label validation baseline is {majority / len(truth):.6f}.\n"
+    )
+    info["validation_class_coverage"] = {"predicted": len(counts), "declared": len(spec.classes),
+                                         "dominant_count": largest, "total": len(new), "truth_classes": len(set(truth))}
+    best = ctx.tree.best
+    if best:
+        old = labels(ctx.executor.run_dir(best.id) / "out")
+        node.complementarity = float(np.mean((old != truth) & (new == truth)))
+
+
 def assess(ctx: RunContext, node: Node, res: ExecResult) -> dict[str, object]:
     """Fill in the node's result fields. Returns extra details for the decision log."""
+    if ctx.task_spec is not None:
+        info: dict[str, object] = {"evaluator": "task_contract"}
+        node.finished_at = now_iso()
+        node.output = res.output
+        output = ctx.executor.run_dir(node.id) / "out"
+        if res.error_type or res.exit_code != 0:
+            _fail(node, "continuation_no_progress" if res.error_type=="ContinuationError" else "artifact_contract" if res.error_type=="ArtifactError" else "timeout" if res.timed_out else "runtime_error")
+            node.summary = res.error_message or "script failed"
+        else:
+            try:
+                node.score = ctx.task_spec.grade(output)
+                if not ctx.flags.get("formal"):
+                    truth = ctx.task_spec.truth.rename_axis(ctx.task_spec.columns[0])
+                    import pandas as pd
+
+                    if not ctx.task_spec.probability:
+                        truth.rename(ctx.task_spec.columns[1]).to_csv(output / "val_labels.csv")
+                    else:
+                        pd.get_dummies(truth).reindex(columns=ctx.task_spec.classes, fill_value=0).astype(int).to_csv(output / "val_labels.csv")
+                node.val_files_ok = True
+                node.predictions_ok = True
+                node.score_source = "task_contract"
+                node.failed = False
+                node.summary = f"Independent {ctx.task_spec.metric}: {node.score:.6f}"
+                node.method_summary = node.plan[:500]
+            except (OSError, ValueError) as exc:
+                node.predictions_ok = False
+                _fail(node, "task_contract")
+                node.summary = str(exc)
+            else:
+                if ctx.flags.get("formal") or ctx.task_spec.metric == "accuracy":
+                    try:
+                        _classification_diagnostic(ctx, node, output, info)
+                    except (OSError, ValueError) as exc:
+                        info["comparison_unavailable"] = str(exc)
+        if not node.method_summary and node.plan:
+            node.method_summary = node.plan[:METHOD_SUMMARY_FALLBACK_CHARS]
+        if ctx.flags.get("formal"):
+            from .utils import atomic_write_json
+
+            atomic_write_json(ctx.executor.run_dir(node.id) / "score.json", {
+                "schema_version": 1, "split_id": ctx.task_spec.signature,
+                "metric": ctx.task_spec.metric, "score": node.score, "score_verified": node.ok,
+                "diagnostics": info, "error": node.summary if node.is_failed else None,
+            })
+        return _finish(ctx, node, info)
     reader = read_results(ctx, node, res)
     return apply_assessment(
         ctx, node, res, reader,
@@ -297,13 +372,14 @@ def _finish(ctx: RunContext, node: Node, info: dict[str, object]) -> dict[str, o
     node.finished_at = now_iso()
     if node.failed is None:
         node.failed = False
+    if ctx.flags.get("formal"):
+        return info
     if node.ok:
         ctx.tree.register_ok(node)
-        if ctx.experience is not None:
-            from .bookkeeping import save_experience
-
-            try:
-                save_experience(ctx, node)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("node %s: could not save the experience record: %s", node.id, exc)
+    if ctx.experience is not None:
+        from .bookkeeping import save_experience
+        try:
+            save_experience(ctx, node)
+        except OSError as exc:
+            log.warning("node %s: could not save the experience record: %s", node.id, exc)
     return info

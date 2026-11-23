@@ -52,11 +52,15 @@ def test_step_reward_levels():
     d = mk(t, "draft", t.root, score=0.5)
     assert step_reward(d, t, 1e-4) == 0.5                 # first success of the branch
     better = mk(t, "refine", d, score=0.6)
-    assert step_reward(better, t, 1e-4) == 1.0            # new branch best
+    assert step_reward(better, t, 1e-4) == pytest.approx(0.95)  # smooth new branch best
     worse = mk(t, "refine", better, score=0.55)
     assert step_reward(worse, t, 1e-4) == 0.0             # success without progress
     bad = mk(t, "refine", worse, failed=True)
     assert step_reward(bad, t, 1e-4) == -1.0
+    huge = mk(t, "refine", d, score=0.95)
+    assert step_reward(huge, t, 1e-4) == pytest.approx(0.75 + 0.35 / 0.6)
+    capped = mk(t, "refine", huge, score=2.0)
+    assert step_reward(capped, t, 1e-4) == 1.5
 
 
 def test_add_reward_updates_the_path():

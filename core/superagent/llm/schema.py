@@ -42,15 +42,21 @@ def _coerce(name: str, spec: Field, value: Any) -> tuple[Any, str | None]:
         if isinstance(value, bool):
             return None, f"field '{name}' must be a number"
         if isinstance(value, (int, float)):
-            return float(value), None
+            num = float(value)
+            if not math.isfinite(num) and not spec.nullable:
+                return None, f"field '{name}' must be a finite number"
+            return num, None
         if isinstance(value, str):
             s = value.strip()
             if s.lower() in {"null", "none", ""} and spec.nullable:
                 return None, None
             try:
-                return float(s), None
+                num = float(s)
             except ValueError:
                 return None, f"field '{name}' must be a number, got {value!r}"
+            if not math.isfinite(num) and not spec.nullable:
+                return None, f"field '{name}' must be a finite number"
+            return num, None
         return None, f"field '{name}' must be a number"
     if t == "boolean":
         if isinstance(value, bool):
@@ -98,7 +104,11 @@ def validate(obj: Mapping[str, Any], schema: Schema) -> tuple[dict[str, Any], li
             errors.append(err)
         else:
             if isinstance(value, float) and not math.isfinite(value):
-                value = None if spec.nullable else value
+                if spec.nullable:
+                    value = None
+                else:
+                    errors.append(f"field '{name}' must be a finite number")
+                    continue
             out[name] = value
     return out, errors
 

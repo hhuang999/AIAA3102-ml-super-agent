@@ -17,13 +17,17 @@ import hashlib
 import logging
 import os
 import shutil
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
-from .ensemble import SCRIPT_HELPERS, combine, detect_format, member_sizes, weights
+import numpy as np
+
+from .ensemble import SCRIPT_HELPERS, VOTE_STRATEGIES, combine, detect_format, member_sizes, weights
 from .metrics import (VAL_LABEL_NAME, VAL_PRED_NAME, Identification, Metric, ValFiles, identify_metric, load_val_files,
                       metric_library, safe_score)
 from .utils import atomic_write_json, atomic_write_text
@@ -63,8 +67,57 @@ def tie_break_metric(metric: Metric) -> Metric | None:
     return None
 
 
+def _spec_encoding(spec) -> str:
+    if not getattr(spec, "probability", False):
+        return "label"
+    cols = getattr(spec, "columns", None) or ()
+    return "binary_prob" if len(cols) == 2 else "multi_prob"
+
+
 def half_of(sample_id: str) -> int:
     return int(hashlib.md5(sample_id.encode("utf-8")).hexdigest(), 16) % 2
+
+
+def stratified_halves(rows: Sequence[str], truth: Any = None) -> list[list[str]]:
+    """Split rows into two stratified, deterministic halves preserving relative row order."""
+    rows_list = list(rows)
+    if truth is None or not rows_list:
+        return [[r for r in rows_list if half_of(r) == h] for h in (0, 1)]
+    pos = {r: idx for idx, r in enumerate(rows_list)}
+    groups: dict[tuple[str, ...], list[str]] = {}
+    is_df = isinstance(truth, pd.DataFrame)
+    is_series = isinstance(truth, pd.Series)
+    for r in rows_list:
+        if is_df:
+            val = truth.loc[r]
+            if isinstance(val, pd.DataFrame):
+                val = val.iloc[0]
+            key = tuple(str(v) for v in val.tolist())
+        elif is_series:
+            key = (str(truth.loc[r]),)
+        elif isinstance(truth, Mapping):
+            key = (str(truth.get(r)),)
+        else:
+            key = ("_",)
+        groups.setdefault(key, []).append(r)
+    h0: list[str] = []
+    h1: list[str] = []
+    toggle = 0
+    for key in sorted(groups):
+        members = sorted(
+            groups[key],
+            key=lambda r: (hashlib.md5(str(r).encode("utf-8")).hexdigest(), pos[r]),
+        )
+        even_len = len(members) - (len(members) % 2)
+        for i in range(0, even_len, 2):
+            h0.append(members[i])
+            h1.append(members[i + 1])
+        if len(members) % 2 == 1:
+            (h0 if toggle == 0 else h1).append(members[-1])
+            toggle ^= 1
+    h0.sort(key=pos.__getitem__)
+    h1.sort(key=pos.__getitem__)
+    return [h0, h1]
 
 
 def _frames(vals: Sequence[ValFiles], rows: list[str], id_col: str) -> list[pd.DataFrame]:
@@ -130,7 +183,9 @@ def greedy_weights(scorer: Scorer, n: int, rows: list[str], rounds: int, hib: bo
     current = scorer.pair(counts, rows)
     if current[0] is None:
         return [1.0] + [0.0] * (n - 1)
-    for _ in range(rounds):
+    is_vote = scorer.fmt.get("strategy") in VOTE_STRATEGIES
+    step = 0
+    while step < rounds:
         best_j: int | None = None
         best_s = current
         for j in range(n):
@@ -139,10 +194,30 @@ def greedy_weights(scorer: Scorer, n: int, rows: list[str], rounds: int, hib: bo
             s = scorer.pair(trial, rows)
             if _pair_better(s, best_s, hib):
                 best_j, best_s = j, s
-        if best_j is None:
-            break
-        counts[best_j] += 1
-        current = best_s
+        if best_j is not None:
+            counts[best_j] += 1
+            current = best_s
+            step += 1
+            continue
+        # Under discrete majority voting, adding 1 vote to an odd total creates ties broken by member 0;
+        # evaluate pair additions (+2 votes) so two complementary models can form a 3-vote majority.
+        if is_vote and step + 2 <= rounds:
+            best_pair: tuple[int, int] | None = None
+            for j in range(n):
+                for k in range(j, n):
+                    trial = list(counts)
+                    trial[j] += 1
+                    trial[k] += 1
+                    s = scorer.pair(trial, rows)
+                    if _pair_better(s, best_s, hib):
+                        best_pair, best_s = (j, k), s
+            if best_pair is not None:
+                counts[best_pair[0]] += 1
+                counts[best_pair[1]] += 1
+                current = best_s
+                step += 2
+                continue
+        break
     total = sum(counts)
     return [c / total for c in counts]
 
@@ -183,7 +258,7 @@ def evaluate(scorer: Scorer, scores: Sequence[float], rows: list[str], hib: bool
     n = len(scores)
     if scorer.secondary is None:
         tie_gain = None
-    halves = [[r for r in rows if half_of(r) == h] for h in (0, 1)]
+    halves = stratified_halves(rows, getattr(scorer, "truth", None))
     single = [scorer.pair(_single(n), h) for h in halves]
     results: list[dict[str, Any]] = []
     plans: list[tuple[str, Callable[[list[str]], list[float]]]] = [
@@ -238,21 +313,159 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 def main():
     with open(os.path.join(HERE, "source.json")) as fh:
         meta = json.load(fh)
+    fmt = meta["format"]
+    src_name = "test_probabilities.csv" if fmt.get("strategy") == "prob_argmax" else "predictions.csv"
     frames, ws = [], []
     for m in meta["members"]:
-        path = os.path.join(HERE, "members", m["dir"], "predictions.csv")
+        path = os.path.join(HERE, "members", m["dir"], src_name)
         frames.append(pd.read_csv(path, dtype=str, keep_default_na=False))
         ws.append(m["weight"])
-    if len(frames) == 1:
+    if len(frames) == 1 and fmt.get("strategy") != "prob_argmax":
         res = frames[0]
     else:
-        res = combine(frames, ws, meta["format"])
+        res = combine(frames, ws, fmt)
     res.to_csv(os.path.join(HERE, "predictions.csv"), index=False)
 
 
 if __name__ == "__main__":
     main()
 '''
+
+
+
+VAL_PROB_NAME = "val_probabilities.csv"
+TEST_PROB_NAME = "test_probabilities.csv"
+
+
+def _canon_label(v: str) -> str:
+    s = str(v).strip()
+    try:
+        f = float(s)
+        if np.isfinite(f) and f == int(f):
+            return str(int(f))
+    except ValueError:
+        pass
+    return s
+
+
+def _load_prob_sidecar(
+    out_dir: Path,
+    id_col: str,
+    val_rows: list[str],
+    test_ids: list[str],
+    expected_classes: list[str] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str]] | None:
+    """Load and validate optional val/test probability sidecars for a discrete-label candidate."""
+    vp = out_dir / VAL_PROB_NAME
+    tp = out_dir / TEST_PROB_NAME
+    if not vp.is_file() or not tp.is_file():
+        return None
+    try:
+        vdf = pd.read_csv(vp, dtype=str, keep_default_na=False)
+        tdf = pd.read_csv(tp, dtype=str, keep_default_na=False)
+    except Exception:  # noqa: BLE001
+        return None
+    if len(vdf.columns) < 3 or list(vdf.columns)[0] != id_col or list(tdf.columns)[0] != id_col:
+        return None
+    v_map = {_canon_label(c): c for c in vdf.columns[1:]}
+    t_map = {_canon_label(c): c for c in tdf.columns[1:]}
+    if len(v_map) != len(vdf.columns) - 1 or set(v_map) != set(t_map):
+        return None
+    classes = expected_classes if expected_classes is not None else sorted(v_map.keys())
+    if set(classes) != set(v_map):
+        return None
+    if vdf[id_col].duplicated().any() or tdf[id_col].duplicated().any():
+        return None
+    v_indexed = vdf.set_index(id_col)
+    t_indexed = tdf.set_index(id_col)
+    if not set(val_rows).issubset(set(v_indexed.index)) or set(test_ids) != set(t_indexed.index):
+        return None
+    try:
+        v_num = v_indexed.loc[val_rows, [v_map[c] for c in classes]].apply(pd.to_numeric, errors="raise").to_numpy(dtype=float)
+        t_num = t_indexed.loc[test_ids, [t_map[c] for c in classes]].apply(pd.to_numeric, errors="raise").to_numpy(dtype=float)
+    except Exception:  # noqa: BLE001
+        return None
+    for arr in (v_num, t_num):
+        if not np.isfinite(arr).all() or (arr < -1e-3).any() or (arr > 1.0 + 1e-3).any():
+            return None
+        rsum = arr.sum(axis=1)
+        if not np.allclose(rsum, 1.0, atol=0.05):
+            return None
+    v_clean = np.clip(v_num, 0.0, 1.0)
+    v_clean = v_clean / np.where(v_clean.sum(axis=1, keepdims=True) > 0, v_clean.sum(axis=1, keepdims=True), 1.0)
+    t_clean = np.clip(t_num, 0.0, 1.0)
+    t_clean = t_clean / np.where(t_clean.sum(axis=1, keepdims=True) > 0, t_clean.sum(axis=1, keepdims=True), 1.0)
+
+    v_out = pd.DataFrame(v_clean, index=val_rows, columns=classes)
+    t_out = pd.DataFrame({id_col: test_ids, **{c: [f"{x:.8f}" for x in t_clean[:, j]] for j, c in enumerate(classes)}})
+    return v_out, t_out, classes
+
+
+class ProbSidecarScorer(Scorer):
+    """Scores weighted probability combinations for discrete-label tasks, with cross-entropy tie-breaking."""
+
+    def __init__(
+        self,
+        val_probs: Sequence[pd.DataFrame],
+        truth: pd.DataFrame,
+        metric: Metric,
+        classes: list[str],
+        pred_col: str,
+        id_col: str,
+        use_logloss_tiebreak: bool = True,
+    ) -> None:
+        self.val_probs = list(val_probs)
+        self.truth = truth
+        self.metric = metric
+        self.classes = list(classes)
+        self.pred_col = pred_col
+        self.id_col = id_col
+        self.fmt = {
+            "id_col": id_col,
+            "pred_cols": [pred_col],
+            "prob_cols": list(classes),
+            "copy_cols": [],
+            "strategy": "prob_argmax",
+            "normalize": False,
+            "columns": [id_col, pred_col],
+        }
+        self.secondary = Metric("log_loss", "label", False, lambda _t, _p: 0.0) if use_logloss_tiebreak else None
+        self._class_to_idx = {c: i for i, c in enumerate(self.classes)}
+
+    def _blend(self, w: Sequence[float], rows: list[str]) -> np.ndarray | None:
+        idx = [i for i, x in enumerate(w) if x > 0]
+        if not idx:
+            return None
+        wsum = sum(float(w[i]) for i in idx)
+        if wsum <= 0:
+            return None
+        mat = sum(self.val_probs[i].loc[rows].to_numpy(dtype=float) * (float(w[i]) / wsum) for i in idx)
+        return mat
+
+    def score(self, w: Sequence[float], rows: list[str]) -> float | None:
+        mat = self._blend(w, rows)
+        if mat is None:
+            return None
+        labels = [self.classes[int(i)] for i in mat.argmax(axis=1)]
+        pred = pd.DataFrame({self.pred_col: labels}, index=rows)
+        return safe_score(self.metric, self.truth.loc[rows][[self.pred_col]], pred)
+
+    def pair(self, w: Sequence[float], rows: list[str]) -> tuple[float | None, float | None]:
+        mat = self._blend(w, rows)
+        if mat is None:
+            return None, None
+        labels = [self.classes[int(i)] for i in mat.argmax(axis=1)]
+        pred = pd.DataFrame({self.pred_col: labels}, index=rows)
+        prim = safe_score(self.metric, self.truth.loc[rows][[self.pred_col]], pred)
+        if self.secondary is None:
+            return prim, None
+        y_raw = [_canon_label(v) for v in self.truth.loc[rows][self.pred_col].tolist()]
+        if any(v not in self._class_to_idx for v in y_raw):
+            return prim, None
+        y_idx = np.array([self._class_to_idx[v] for v in y_raw], dtype=int)
+        p_true = np.clip(mat[np.arange(len(rows)), y_idx], 1e-15, 1.0)
+        ll = float(-np.mean(np.log(p_true)))
+        return prim, ll
 
 
 def _member_dir(rank: int, node_id: str) -> str:
@@ -264,7 +477,7 @@ def _write_member(final_dir: Path, c: Candidate) -> str:
     d = final_dir / "members" / name
     d.mkdir(parents=True, exist_ok=True)
     atomic_write_text(d / "solution.py", c.code)
-    for fname in ("predictions.csv", VAL_PRED_NAME, VAL_LABEL_NAME):
+    for fname in ("predictions.csv", VAL_PRED_NAME, VAL_LABEL_NAME, "val_probabilities.csv", "test_probabilities.csv"):
         src = c.out_dir / fname
         if src.exists():
             shutil.copyfile(src, d / fname)
@@ -277,47 +490,87 @@ def _write_member(final_dir: Path, c: Candidate) -> str:
     return name
 
 
-def build_final(output_dir: Path, cands: Sequence[Candidate], higher_is_better: bool, cfg: Mapping[str, Any]) -> dict[str, Any]:
+def build_final(output_dir: Path, cands: Sequence[Candidate], higher_is_better: bool, cfg: Mapping[str, Any], *, spec=None, deadline=None, task_desc: str = "") -> dict[str, Any]:
     """Write ``final/`` and return its description (also saved as ``final/source.json``)."""
-    final_dir = Path(output_dir) / "final"
-    if final_dir.exists():
-        shutil.rmtree(final_dir, ignore_errors=True)
+    from .publication import publish, version
     cands = [c for c in cands if (c.out_dir / "predictions.csv").exists()]
     if not cands:
         return {"available": False, "kind": None, "reason": "no solution with a prediction file"}
-    final_dir.mkdir(parents=True, exist_ok=True)
-    best = cands[0]
-    best_pred = pd.read_csv(best.out_dir / "predictions.csv", dtype=str, keep_default_na=False)
-    columns = [str(c) for c in best_pred.columns]
-    fmt = detect_format(best_pred)
-    info: dict[str, Any] = {"available": True, "kind": "single", "method": "single", "metric": None, "encoding": None,
-                            "validation": None, "candidates": [], "reason": ""}
-    chosen: list[tuple[Candidate, float]] = [(best, 1.0)]
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target = output_dir / "final"
+    use_symlink = (spec is not None) or target.is_symlink()
+    final_dir = version(output_dir) if use_symlink else Path(tempfile.mkdtemp(prefix=".final-", dir=str(output_dir)))
     try:
-        chosen, info = _choose(cands, columns, fmt, higher_is_better, cfg, info)
-    except Exception as exc:  # noqa: BLE001 - any problem keeps the single best solution
-        log.warning("validated ensembling failed: %s", exc)
-        info["reason"] = f"ensemble evaluation failed: {type(exc).__name__}: {exc}"
-        chosen = [(best, 1.0)]
-        info["kind"], info["method"] = "single", "single"
-    members = []
-    for c, w in chosen:
-        members.append({"dir": _write_member(final_dir, c), "rank": c.rank, "node_id": c.node_id, "score": c.score, "weight": w})
-    if len(chosen) == 1:
-        shutil.copyfile(chosen[0][0].out_dir / "predictions.csv", final_dir / "predictions.csv")
-    else:
-        frames = [pd.read_csv(c.out_dir / "predictions.csv", dtype=str, keep_default_na=False) for c, _ in chosen]
-        combine(frames, [w for _, w in chosen], fmt).to_csv(final_dir / "predictions.csv", index=False)
-    info["members"] = members
-    info["format"] = {k: fmt[k] for k in ("id_col", "pred_cols", "copy_cols", "strategy", "normalize", "columns")}
-    info["columns"] = columns
-    atomic_write_json(final_dir / "source.json", info)
-    atomic_write_text(final_dir / "combine.py", FINAL_SCRIPT)
-    return info
+        best = cands[0]
+        best_pred = pd.read_csv(best.out_dir / "predictions.csv", dtype=str, keep_default_na=False)
+        columns = [str(c) for c in best_pred.columns]
+        fmt = detect_format(best_pred)
+        info: dict[str, Any] = {"available": True, "kind": "single", "method": "single", "metric": None, "encoding": None,
+                                "validation": None, "candidates": [], "reason": ""}
+        chosen: list[tuple[Candidate, float]] = [(best, 1.0)]
+        try:
+            chosen, info = _choose(cands, columns, fmt, higher_is_better, cfg, info, spec=spec, task_desc=task_desc)
+        except Exception as exc:  # noqa: BLE001 - any problem keeps the single best solution
+            log.warning("validated ensembling failed: %s", exc)
+            info["reason"] = f"ensemble evaluation failed: {type(exc).__name__}: {exc}"
+            chosen = [(best, 1.0)]
+            info["kind"], info["method"] = "single", "single"
+        members = []
+        for c, w in chosen:
+            members.append({"dir": _write_member(final_dir, c), "rank": c.rank, "node_id": c.node_id, "score": c.score, "weight": w})
+        active_fmt = info.get("_selected_format") or fmt
+        if "_selected_format" in info:
+            fmt = info.pop("_selected_format")
+        if len(chosen) == 1 and active_fmt.get("strategy") != "prob_argmax":
+            shutil.copyfile(chosen[0][0].out_dir / "predictions.csv", final_dir / "predictions.csv")
+        elif active_fmt.get("strategy") == "prob_argmax":
+            p_frames = []
+            for c, _ in chosen:
+                loaded = _load_prob_sidecar(
+                    c.out_dir, active_fmt["id_col"], [], best_pred[active_fmt["id_col"]].tolist(), list(active_fmt["prob_cols"])
+                )
+                assert loaded is not None
+                _, t_norm, _ = loaded
+                # Write canonicalized test_probabilities.csv into member dir so combine.py & adapter replay match identically
+                mdir = final_dir / "members" / _member_dir(c.rank, c.node_id)
+                t_norm.to_csv(mdir / TEST_PROB_NAME, index=False)
+                p_frames.append(t_norm)
+            combine(p_frames, [w for _, w in chosen], active_fmt).to_csv(final_dir / "predictions.csv", index=False)
+        else:
+            frames = [pd.read_csv(c.out_dir / "predictions.csv", dtype=str, keep_default_na=False) for c, _ in chosen]
+            combine(frames, [w for _, w in chosen], active_fmt).to_csv(final_dir / "predictions.csv", index=False)
+        if info["kind"] == "single":
+            info["node_id"] = chosen[0][0].node_id
+            if spec:
+                info["metric"] = spec.metric
+                info["encoding"] = _spec_encoding(spec)
+                if info["validation"] is None:
+                    info["validation"] = {}
+                info["validation"].update(score=chosen[0][0].score, rows=len(spec.truth))
+        info["members"] = members
+        info["format"] = {k: fmt[k] for k in ("id_col", "pred_cols", "prob_cols", "copy_cols", "strategy", "normalize", "columns") if k in fmt}
+        info["columns"] = columns
+        atomic_write_json(final_dir / "source.json", info)
+        atomic_write_text(final_dir / "combine.py", FINAL_SCRIPT)
+        if spec:
+            spec.predictions(final_dir / "predictions.csv", spec.test_ids, ordered=True)
+        if deadline is not None and time.monotonic() >= deadline:
+            return {"available": False, "reason": "publication deadline"}
+        if use_symlink:
+            publish(output_dir, final_dir)
+        else:
+            if target.exists():
+                shutil.rmtree(target)
+            os.replace(final_dir, target)
+        return info
+    finally:
+        if not use_symlink and final_dir.exists():
+            shutil.rmtree(final_dir, ignore_errors=True)
 
 
 def _choose(cands: Sequence[Candidate], columns: list[str], fmt: Mapping[str, Any], hib: bool, cfg: Mapping[str, Any],
-            info: dict[str, Any]) -> tuple[list[tuple[Candidate, float]], dict[str, Any]]:
+            info: dict[str, Any], *, spec=None, task_desc: str = "") -> tuple[list[tuple[Candidate, float]], dict[str, Any]]:
     best = cands[0]
     single = [(best, 1.0)]
     if not cfg["allow_ensemble"]:
@@ -327,7 +580,13 @@ def _choose(cands: Sequence[Candidate], columns: list[str], fmt: Mapping[str, An
         info["reason"] = "only one solution available"
         return single, info
     vals = [load_val_files(c.out_dir, columns) for c in cands]
-    ident: Identification = identify_metric([(v, c.score) for v, c in zip(vals, cands)], hib)
+    ident: Identification = identify_metric([(v, c.score) for v, c in zip(vals, cands)], hib, task_desc=task_desc)
+    if spec:
+        from .metrics import metric_library
+        encoding = _spec_encoding(spec)
+        metric = next((m for m in metric_library() if m.encoding == encoding and m.name == spec.metric), None)
+        from dataclasses import replace
+        ident = replace(ident, metric=metric, encoding=encoding, reason="task_contract")
     info["metric"] = ident.metric.name if ident.metric else None
     info["encoding"] = ident.encoding
     info["metric_identification"] = {"matched": ident.matched, "checked": ident.checked, "reason": ident.reason,
@@ -359,6 +618,46 @@ def _choose(cands: Sequence[Candidate], columns: list[str], fmt: Mapping[str, An
     scorer = Scorer(kv, kv[0].true, ident.metric, fmt, columns[0], secondary=secondary)
     tie_gain = float(cfg.get("tie_break_min_gain", 0.001)) if secondary is not None else None
     ev = evaluate(scorer, [c.score for c in kc], rows, hib, int(cfg["greedy_rounds"]), float(cfg["min_gain"]), tie_gain)
+
+    # When discrete labels are required, also evaluate optional probability sidecars if member 0 and >=1 peer provide them
+    if spec is None and ident.encoding == "label" and len(fmt["pred_cols"]) == 1:
+        test_ids = pd.read_csv(kc[0].out_dir / "predictions.csv", dtype=str, keep_default_na=False)[columns[0]].tolist()
+        s0 = _load_prob_sidecar(kc[0].out_dir, columns[0], rows, test_ids)
+        if s0 is not None:
+            v0, _, prob_classes = s0
+            # Verify member 0's probability argmax is consistent with its own val_predictions.csv (>=97% agreement)
+            m0_argmax = [prob_classes[int(i)] for i in v0.to_numpy(dtype=float).argmax(axis=1)]
+            m0_labels = [_canon_label(x) for x in kv[0].pred.loc[rows, fmt["pred_cols"][0]].tolist()]
+            if np.mean([a == b for a, b in zip(m0_argmax, m0_labels)]) >= 0.97:
+                prob_keep = [0]
+                v_probs = [v0]
+                for idx_m in range(1, len(kc)):
+                    sm = _load_prob_sidecar(kc[idx_m].out_dir, columns[0], rows, test_ids, prob_classes)
+                    if sm is not None:
+                        prob_keep.append(idx_m)
+                        v_probs.append(sm[0])
+                if len(prob_keep) >= 2:
+                    p_cands = [kc[i] for i in prob_keep]
+                    p_scorer = ProbSidecarScorer(
+                        v_probs, kv[0].true, ident.metric, prob_classes, fmt["pred_cols"][0], columns[0], use_tie
+                    )
+                    p_tie_gain = float(cfg.get("tie_break_min_gain", 0.001)) if use_tie else None
+                    ev_prob = evaluate(
+                        p_scorer, [c.score for c in p_cands], rows, hib, int(cfg["greedy_rounds"]), float(cfg["min_gain"]), p_tie_gain
+                    )
+                    for r in ev_prob["candidates"]:
+                        r["method"] = f"prob_{r['method']}"
+                    prob_accepted = [r for r in ev_prob["candidates"] if r["accepted"]]
+                    vote_accepted = [r for r in ev["candidates"] if r["accepted"]]
+                    if prob_accepted:
+                        best_p = max(prob_accepted, key=lambda r: (_mean(r["half_scores"]) or -1e9) * (1 if hib else -1))
+                        best_v = max(vote_accepted, key=lambda r: (_mean(r["half_scores"]) or -1e9) * (1 if hib else -1)) if vote_accepted else None
+                        if best_v is None or (_better(_mean(best_p["half_scores"]), _mean(best_v["half_scores"]), hib) or abs((_mean(best_p["half_scores"]) or 0) - (_mean(best_v["half_scores"]) or 0)) <= TIE_EPS):
+                            kc = p_cands
+                            scorer = p_scorer
+                            secondary = p_scorer.secondary
+                            ev = ev_prob
+                            info["_selected_format"] = p_scorer.fmt
     info["validation"] = {"rows": len(rows), "half_sizes": ev["half_sizes"], "single_full_score": ev["single_full_score"],
                           "single_half_scores": ev["single_half_scores"], "members_considered": [c.node_id for c in kc]}
     if "tie_break" in ev:
@@ -387,6 +686,17 @@ def _choose(cands: Sequence[Candidate], columns: list[str], fmt: Mapping[str, An
 
     pick = min(accepted, key=key)
     chosen = [(c, w) for c, w in zip(kc, pick["weights"]) if w > 0]
+    if len(chosen)>1:
+        marginal={}
+        for i,candidate in enumerate(kc):
+            if pick["weights"][i]<=0:
+                continue
+            w=list(pick["weights"])
+            w[i]=0
+            total=sum(w)
+            without=scorer.score([v/total for v in w],rows) if total else None
+            marginal[candidate.node_id]=None if without is None else (pick["full_score"]-without)*(1 if hib else -1)
+        info["validation"]["leave_one_out_gain"]=marginal
     by_tie = "tie_break" in pick["half_verdicts"]
     reason = ("ensemble beat the single best solution on both validation halves"
               + (f" (on a tied half by {secondary.name if secondary else 'the second measure'})" if by_tie else ""))

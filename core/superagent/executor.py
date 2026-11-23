@@ -46,6 +46,8 @@ class ExecResult:
     timeout_seconds: float
     smoke: str | None = None           # passed | failed | timed_out | None (no smoke run)
     smoke_seconds: float = 0.0
+    artifact_verification: dict | None = None
+    continuation_verification: dict | None = None
 
 
 def parse_exception(output: str) -> tuple[str, str] | None:
@@ -130,11 +132,21 @@ class _OutputCollector:
             pass
 
 
-def _kill_group(pgid: int, sig: int) -> None:
-    try:
-        os.killpg(pgid, sig)
-    except (ProcessLookupError, PermissionError):
-        pass
+_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+def _kill_group(pgid: int, sig: int, proc: subprocess.Popen[str] | None = None) -> None:
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(pgid, sig)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    if proc is not None:
+        try:
+            proc.kill() if sig == _SIGKILL else proc.terminate()
+        except OSError:
+            pass
 
 
 class Executor:
@@ -150,7 +162,12 @@ class Executor:
         self.runs_dir = Path(runs_dir)
         self.prepared_dir = Path(prepared_dir)
         self.parallel = int(parallel)
-        self.num_gpus = int(num_gpus)
+        from .control.hardware import cuda_mask
+
+        mask = cuda_mask()
+        offset = int(os.environ.get("SUPERAGENT_GPU_OFFSET", "0") or "0")
+        self.gpu_devices = mask[:num_gpus] if mask is not None else tuple(str(offset + i) for i in range(num_gpus))
+        self.num_gpus = len(self.gpu_devices)
         self.policy_env = dict(policy_env)
         try:
             available = sorted(os.sched_getaffinity(0))
@@ -172,6 +189,9 @@ class Executor:
         self._procs: dict[int, subprocess.Popen[bytes]] = {}
         self._lock = threading.Lock()
         self._kill_all = threading.Event()
+        self._intervals = []
+        self._running_slots = {}
+        self.isolation = None
 
     # ------------------------------------------------------------------ run dirs
     def run_dir(self, node_id: str) -> Path:
@@ -184,7 +204,7 @@ class Executor:
             with open(d / "solution.py", "w", encoding="utf-8", newline="") as fh:
                 fh.write(code)
         link = d / "data"
-        if not link.exists() and not link.is_symlink():
+        if self.isolation is None and not link.exists() and not link.is_symlink():
             os.symlink(self.prepared_dir.resolve(), link)
         (d / "work").mkdir(exist_ok=True)
         (d / "out").mkdir(exist_ok=True)
@@ -198,40 +218,67 @@ class Executor:
         n = str(self.cores_per_slot)
         for var in THREAD_ENV_VARS:
             env[var] = n
-        env["CUDA_VISIBLE_DEVICES"] = str(slot % self.num_gpus) if self.num_gpus > 0 else ""
+        env["CUDA_VISIBLE_DEVICES"] = self.gpu_devices[slot % self.num_gpus] if self.num_gpus else ""
         env.update(self.policy_env)
         return env
 
     # ------------------------------------------------------------------ execution
-    def acquire_slot(self, abort: threading.Event | None = None) -> int | None:
+    def acquire_slot(self, abort: threading.Event | None = None, deadline: float | None = None) -> int | None:
         while True:
+            if self._kill_all.is_set() or (abort is not None and abort.is_set()):
+                return None
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
             try:
                 return self._free.get(timeout=POLL_SECONDS)
             except queue.Empty:
                 if self._kill_all.is_set() or (abort is not None and abort.is_set()):
                     return None
 
+    def utilization(self, start, end):
+        """Time a GPU had at least one assigned script slot; not device compute utilization."""
+        with self._lock:
+            spans = self._intervals + [(s, t, end) for s, t in self._running_slots.values()]
+        used = 0.0
+        for gpu in range(self.num_gpus):
+            last = start
+            for a, b in sorted((max(start,a), min(end,b)) for s,a,b in spans if s % self.num_gpus == gpu):
+                used += max(0, b-max(last,a))
+                last = max(last,b)
+        return {"assigned_gpu_seconds":round(used,3), "unassigned_gpu_seconds":round(max(0,(end-start)*self.num_gpus-used),3)}
+
     def release_slot(self, slot: int) -> None:
         self._free.put(slot)
 
     def run(self, node_id: str, code: str, timeout: float, abort: threading.Event | None = None,
-            smoke_timeout: float | None = None) -> ExecResult:
+            smoke_timeout: float | None = None, trial_env: Mapping[str,str] | None = None,
+            inference_inputs: tuple[str, ...] | None = None, probability: bool = False) -> ExecResult:
         """Run ``code`` as ``solution.py`` in the node's run directory (acquires a slot).
 
         With ``smoke_timeout``, the script first runs with ``SUPERAGENT_SMOKE=1``; when that run
         fails, the full run is skipped and the smoke run's result is returned.
         """
+        started=time.monotonic()
+        deadline=started+timeout
         run_dir = self.prepare_run_dir(node_id, code)
-        slot = self.acquire_slot(abort)
+        trial_env=dict(trial_env or {})
+        trial_env["PYTHONPATH"]=os.pathsep.join(filter(None,[str(Path(__file__).resolve().parents[1]),os.environ.get("PYTHONPATH")]))
+        trial_env["SUPERAGENT_TRAIN_UNTIL"]=str(deadline-float(trial_env.get("SUPERAGENT_DELIVERY_SECONDS",0)))
+        slot = self.acquire_slot(abort, None if self.isolation is not None else deadline)
         if slot is None:
             return ExecResult("[superagent] Run cancelled before start.\n", 0.0, "RuntimeError",
                               "run cancelled before start", False, None, timeout)
+        with self._lock:
+            self._running_slots[node_id]=(slot,time.monotonic())
         try:
+            if self.isolation is not None:
+                deadline = time.monotonic() + timeout
+                trial_env["SUPERAGENT_TRAIN_UNTIL"] = str(deadline - float(trial_env.get("SUPERAGENT_DELIVERY_SECONDS", 0)))
             prefix = ""
             smoke: str | None = None
             smoke_secs = 0.0
             if smoke_timeout:
-                sres = self._run_in_slot(run_dir, slot, smoke_timeout, abort, {SMOKE_ENV: "1"}, "smoke_stdout.log")
+                sres = self._run_in_slot(run_dir, slot, min(smoke_timeout,max(0,deadline-time.monotonic())), abort, {**trial_env,SMOKE_ENV: "1"}, "smoke_stdout.log")
                 self._reset_outputs(run_dir)
                 smoke_secs = sres.exec_seconds
                 if sres.error_message and "cancelled" in sres.error_message:
@@ -246,13 +293,44 @@ class Executor:
                 else:
                     smoke = "passed"
                     prefix = f"[superagent] Smoke run (SUPERAGENT_SMOKE=1) passed in {smoke_secs:.1f} seconds.\n"
-            res = self._run_in_slot(run_dir, slot, timeout, abort)
+            left=deadline-time.monotonic()
+            if left <= 0:
+                return ExecResult("No time after smoke/queue",0,"TimeoutError","execution budget exhausted",True,None,timeout)
+            res = self._run_in_slot(run_dir, slot, left, abort, trial_env)
             res.output = prefix + res.output
             res.smoke, res.smoke_seconds = smoke, smoke_secs
+            if inference_inputs is not None and not res.error_type and res.exit_code == 0:
+                from .artifacts import verify
+                from .utils import atomic_write_json
+                res.artifact_verification = verify(self, run_dir, slot, deadline, abort, inference_inputs, probability)
+                atomic_write_json(run_dir/"artifact_verification.json",res.artifact_verification)
+                if not res.artifact_verification["passed"]:
+                    res.error_type, res.error_message = "ArtifactError", res.artifact_verification["error"]
+                    res.output += "\n[artifact verifier] " + res.error_message
+                res.exec_seconds = time.monotonic()-started
             return res
         finally:
+            with self._lock:
+                s, t = self._running_slots.pop(node_id)
+                self._intervals.append((s,t,time.monotonic()))
             self.release_slot(slot)
             shutil.rmtree(run_dir / "work", ignore_errors=True)
+
+    def verify_bundle(self, node_id, spec, timeout, abort):
+        from .artifacts import verify
+        from .utils import atomic_write_json
+
+        run_dir = self.run_dir(node_id)
+        slot = self.acquire_slot(abort)
+        if slot is None:
+            return {"passed": False, "error": "cancelled", "seconds": 0}
+        try:
+            receipt = verify(self, run_dir, slot, time.monotonic() + timeout, abort,
+                             spec.inference_inputs, spec.probability, spec=spec)
+            atomic_write_json(run_dir / "artifact_verification.json", receipt)
+            return receipt
+        finally:
+            self.release_slot(slot)
 
     @staticmethod
     def _reset_outputs(run_dir: Path) -> None:
@@ -261,14 +339,18 @@ class Executor:
             (run_dir / name).mkdir(exist_ok=True)
 
     def _run_in_slot(self, run_dir: Path, slot: int, timeout: float, abort: threading.Event | None,
-                     extra_env: Mapping[str, str] | None = None, log_name: str = "stdout.log") -> ExecResult:
+                     extra_env: Mapping[str, str] | None = None, log_name: str = "stdout.log", *, argv=None) -> ExecResult:
         collector = _OutputCollector(run_dir / log_name)
         t0 = time.monotonic()
         env = self._env(slot)
         if extra_env:
             env.update(extra_env)
+        args = argv if argv is not None else ["solution.py"]
+        command = [sys.executable, *args]
+        if self.isolation is not None:
+            command, env = self.isolation.command(run_dir, args, env, inference=argv is not None)
         proc = subprocess.Popen(
-            [sys.executable, "solution.py"],
+            command,
             cwd=str(run_dir),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -306,17 +388,17 @@ class Executor:
                 break
             time.sleep(POLL_SECONDS)
         if timed_out or cancelled:
-            _kill_group(pgid, signal.SIGINT)
+            _kill_group(pgid, signal.SIGINT, proc)
             deadline = time.monotonic() + TERMINATE_GRACE_SECONDS
             while proc.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.05)
-            _kill_group(pgid, signal.SIGKILL)
+            _kill_group(pgid, _SIGKILL, proc)
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:  # pragma: no cover
                 pass
         # Clean up any children the script left behind.
-        _kill_group(pgid, signal.SIGKILL)
+        _kill_group(pgid, _SIGKILL, proc)
         rt.join(timeout=5)
         exec_seconds = time.monotonic() - t0
         with self._lock:
@@ -341,7 +423,7 @@ class Executor:
         with self._lock:
             procs = list(self._procs.values())
         for p in procs:
-            _kill_group(p.pid, signal.SIGINT)
+            _kill_group(p.pid, signal.SIGINT, p)
         time.sleep(0.5)
         for p in procs:
-            _kill_group(p.pid, signal.SIGKILL)
+            _kill_group(p.pid, _SIGKILL, p)

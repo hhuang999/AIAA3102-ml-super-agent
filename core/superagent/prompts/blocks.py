@@ -34,6 +34,7 @@ class Resources:
     gpu_memory_gb: float | None = None
     gpu_sharing: int = 1
     smoke_seconds: float = 0.0
+    external_stop: bool = False
 
 
 def _fmt_dur(secs: float) -> str:
@@ -59,6 +60,9 @@ def _gpu_line(res: Resources) -> str:
 
 
 def _time_lines(res: Resources) -> str:
+    if res.external_stop:
+        return (f"- Candidate slots left: {res.steps_left}. The caller controls when the task stops.\n"
+                f"- Finish this script within {_fmt_dur(res.run_limit_secs)} including training and predictions.")
     if not res.budget_text:
         return (f"- Total time left for the whole search: {_fmt_dur(res.time_left_secs)}. Steps left: {res.steps_left}.\n"
                 f"- Time limit for this script: {_fmt_dur(res.run_limit_secs)} ({int(res.run_limit_secs)} seconds). "
@@ -82,9 +86,38 @@ GPU_HABITS = """
 - GPU memory: start with a moderate batch size; on a CUDA out-of-memory error lower the batch size and use gradient accumulation. Before training another model in the same script, release the previous one (del model; torch.cuda.empty_cache())."""
 
 
-def implementation_rules(res: Resources, split_seed: int, val_fraction: float) -> str:
+def implementation_rules(res: Resources, split_seed: int, val_fraction: float, *, declared_split=False, include_torch: bool = True) -> str:
+    from ..helper_api import reference
+    continuation_line = (
+        "Training continuation: use superagent.training.remaining_train_seconds() before each epoch to leave time for validation and full test predictions. Call restore_torch(model, optimizer, scheduler=...) before training and save_torch(..., epoch=..., next_seconds=..., delivery_seconds=...) after a resumable epoch. Save sampler/generator/scaler if used. Other frameworks use resume_path() and save_checkpoint(...). Always emit predictions at each rung. For a verified frozen extractor with deterministic preprocessing, superagent.features.frozen_features can cache features across rungs: bind split, ordered row_ids, weights_sha256, transform and extractor revision. Never reuse for random augmentations or changing weights."
+        if include_torch else
+        "Training continuation: use superagent.training.remaining_train_seconds() before each iteration to leave time for validation and full test predictions, and use resume_path() and save_checkpoint(...) with optimizer_steps, model_state and optimizer_state. Always emit predictions at each rung."
+    )
     gpu_habits = GPU_HABITS if res.num_gpus > 0 else ""
     smoke_rule = smoke_mode_rule(res.smoke_seconds) if res.smoke_seconds > 0 else ""
+    split = ("Use the validation partition, ID rules and metric in the authoritative task contract. Never substitute a generated split." if declared_split else f"If a dedicated validation file (such as ./data/val.csv) exists in ./data, evaluate VALIDATION_SCORE on that exact file without re-splitting; otherwise use a stratified split by label with validation fraction {val_fraction}.")
+    score_rule = (
+        "The agent scores validation predictions independently. Training may report its validation score for diagnostics. "
+        "Predict-only writes predictions without reading validation labels or computing a score."
+        if declared_split else
+        "The very last line printed by the script must be `VALIDATION_SCORE: <number>`, computed on held-out validation data with the official task metric."
+    )
+    validation_files = (
+        """Write ./out/val_predictions.csv with the sample prediction columns and the exact validation IDs defined by the task contract. The evaluator supplies validation truth."""
+        if declared_split else
+        """Also write ./out/val_predictions.csv and ./out/val_labels.csv for the validation samples behind the printed score.
+   - Both files have exactly the columns of the prediction file, in the same order.
+   - The first column identifies each validation sample: its id from the training data, or its 0-based row number in the training file when there is no id column. Both files use the same identifiers.
+   - val_predictions.csv holds the predictions for these samples, produced and encoded exactly like the test predictions.
+   - val_labels.csv holds the true targets in the same encoding: the true class label where the prediction is a class label; 1 for the true class and 0 for the others where there is one probability column per class; the true 0 or 1 where there is a single probability column.
+   - With cross-validation (when no dedicated ./data/val.csv is provided), write the out-of-fold predictions of all training samples. When ./data/val.csv is provided, VALIDATION_SCORE, val_predictions.csv and val_labels.csv must all come from ./data/val.csv.
+   - When the required prediction file contains discrete class labels (not probabilities), also write ./out/val_probabilities.csv and ./out/test_probabilities.csv (first column = exact sample id column, followed by one column per class label in sorted order, e.g. id,0,1 or id,classA,classB, with row probabilities summing to 1.0) so downstream ensembling can combine calibrated class probabilities."""
+    )
+    validation_check = (
+        "- Does predict-only recreate both prediction files using only the model package and inference inputs?"
+        if declared_split else
+        "- Are val_predictions.csv and val_labels.csv written with the prediction file's columns?\n- Is the last printed line the score marker?"
+    )
     return f"""## Implementation rules
 Resources:
 {_time_lines(res)}
@@ -92,27 +125,24 @@ Resources:
 - {RESOURCE_LINE[res.mode]}
 
 Hard requirements:
+{reference(include_torch=include_torch)}
 1. Real inference. Every validation and test prediction must come from inference with the trained model. Never use constants, placeholders, random numbers or statistics as predictions. Never fake or simplify the metric function.
 2. Prediction file. Predict every test sample and write ./out/predictions.csv, formatted exactly like sample_predictions.csv (when present) and the task description.
 3. Model files. Save everything needed to predict again later into ./out/model/: model weights, fitted preprocessing objects (encoders, tokenizers, scalers, ...) and the label mapping.
-4. Score marker. The very last line printed by the script must be `VALIDATION_SCORE: <number>`, computed on held-out validation data with the official task metric.
+4. Validation scoring. {score_rule}
 5. Validation equals test. Validation and test data must go through exactly the same preprocessing, inference and post-processing.
 6. Shared validation split.
    - Use the fixed random seed {split_seed}.
-   - Use a stratified split by label with validation fraction {val_fraction}.
+   - {split}
    - With cross-validation, use stratified K-fold with the same seed and report the mean score over the folds.
    - If the data has a group structure or a time order, split by group or by time instead and print why.
    - If the task description prescribes a split, follow it.
    - When modifying an existing solution, never change its split.
 7. Auditable. Print one line describing the validation split and one line naming the metric used.
 8. Task semantics. Local validation must evaluate the same task as the final prediction. Do not silently switch to an easier proxy task, and do not use a proxy metric as the main score.
-9. Validation files. Also write ./out/val_predictions.csv and ./out/val_labels.csv for the validation samples behind the printed score.
-   - Both files have exactly the columns of the prediction file, in the same order.
-   - The first column identifies each validation sample: its id from the training data, or its 0-based row number in the training file when there is no id column. Both files use the same identifiers.
-   - val_predictions.csv holds the predictions for these samples, produced and encoded exactly like the test predictions.
-   - val_labels.csv holds the true targets in the same encoding: the true class label where the prediction is a class label; 1 for the true class and 0 for the others where there is one probability column per class; the true 0 or 1 where there is a single probability column.
-   - With cross-validation, write the out-of-fold predictions of all training samples.
+9. Validation files. {validation_files}
 {smoke_rule}
+{continuation_line}
 Directories:
 - ./data: read-only input data. Never write there.
 - ./work: temporary files and caches. Deleted after the run.
@@ -132,9 +162,8 @@ Running habits:{gpu_habits}
 Self-check before giving the code (go through each item):
 - Do the predictions pass through the weights learned by the model?
 - Is the prediction file written to the right path and does it contain every test sample?
-- Are val_predictions.csv and val_labels.csv written with the prediction file's columns?
+{validation_check}
 - Are the model files saved?
-- Is the last printed line the score marker?
 - Outside smoke mode, is the full training data used, not a small subset?
 - Does local validation keep the original task semantics and the official metric?"""
 
@@ -144,7 +173,8 @@ LEAKAGE_RULES = """## Preventing data leakage
 - Split the data first, then do any processing.
 - Fit every stateful transform (scaling, encoding, imputation, tokenizers, dimensionality reduction) on the training part only, then apply it to the validation and test parts.
 - Compute global statistics (means, variances, vocabularies) from the training part only.
-- Never use label information from the validation part (for example target encoding)."""
+- Never use label information from the validation part (for example target encoding).
+- Never fit, grid-search, or tune ensemble blend weights, stacking meta-learners, calibration parameters, or decision thresholds directly on the final validation labels behind VALIDATION_SCORE. Fit any blend weights, meta-models, or thresholds strictly on inner cross-validation / out-of-fold predictions within the training split, then evaluate VALIDATION_SCORE once cleanly on the untouched validation split."""
 
 ROBUSTNESS_ADVICE = """## Robustness advice (suggestions, not hard requirements)
 - Match the model to the data structure: CNNs or vision transformers for images, transformers or recurrent networks for sequences, gradient boosted trees first for tabular data.
@@ -155,12 +185,12 @@ ROBUSTNESS_ADVICE = """## Robustness advice (suggestions, not hard requirements)
 - Learning-rate schedules: cosine annealing, reduce-on-plateau on the validation metric, warm-up.
 - Use data augmentation suited to the modality.
 - Monitor the validation metric and use early stopping.
-- Prefer models that capture the intrinsic structure of the data over simply making the model bigger."""
+- Prefer models that capture the intrinsic structure of the data over simply making the model bigger.
+- Variance reduction via fold-averaging: when training speed fits comfortably within the script time budget, train K-fold models (e.g. 5-fold StratifiedKFold / KFold) inside the training split and average fold predicted probabilities on validation and test sets rather than relying on a single train/val split."""
 
 
-def environment_block(mode: str, rng: random.Random) -> str:
-    pkgs = [p for p in PACKAGES if not (mode == "off" and p in PRETRAINED_ONLY_PACKAGES)]
-    rng.shuffle(pkgs)
+def environment_block(mode: str, rng: random.Random | None = None) -> str:
+    pkgs = sorted(p for p in PACKAGES if not (mode == "off" and p in PRETRAINED_ONLY_PACKAGES))
     return f"""## Environment
 - Installed packages include: {", ".join(pkgs)}.
 - PyTorch is recommended for neural networks.

@@ -26,7 +26,7 @@ ENUM_KEYS: dict[tuple[str, ...], tuple[str, ...]] = {
     ("llm", "generation", "reasoning_effort"): ("low", "high", "max"),
     ("llm", "judgement", "reasoning_effort"): ("low", "high", "max"),
     ("experience", "vector", "device"): ("cuda", "cpu"),
-    ("experience", "vector", "backend"): ("local", "api"),
+    ("experience", "vector", "backend"): ("local",),
     ("pretrained", "mode"): ("catalog", "open", "off"),
     ("control", "time_allocation", "mode"): ("off", "observe", "enforce"),
     ("search", "reward_mode"): ("per_step", "chain_end"),
@@ -104,6 +104,14 @@ def _check_value(path: tuple[str, ...], value: Any, default: Any) -> None:
 def _merge(base: dict[str, Any], override: Mapping[str, Any], prefix: tuple[str, ...]) -> None:
     for k, v in override.items():
         path = prefix + (str(k),)
+        # Optional role fields inherit their group settings until explicitly set.
+        if k not in base and len(prefix) == 3 and prefix[:2] == ("llm", "role_policy"):
+            if k in ("thinking", "reasoning_effort", "model"):
+                base[k] = ""
+            elif k == "temperature":
+                base[k] = 0.0
+            elif k == "recovery_max_output_tokens":
+                base[k] = 0
         if k not in base:
             raise ConfigError(f"unknown config key '{'.'.join(path)}'")
         default = base[k]
@@ -142,6 +150,7 @@ def build_config(
 ) -> dict[str, Any]:
     """Return the effective configuration. Raises :class:`ConfigError` on any problem."""
     cfg = load_defaults()
+    user = {}
     if user_config_path is not None:
         p = Path(user_config_path)
         if not p.is_file():
@@ -166,6 +175,64 @@ def build_config(
         if path is None:
             raise ConfigError(f"unknown option '{name}'")
         set_path(cfg, path, value)
+    runner = cfg["verification"]["runner"]
+    if runner not in ("legacy", "bubblewrap") or cfg["verification"]["timeout_seconds"] <= 0:
+        raise ConfigError("verification requires legacy/bubblewrap and a positive timeout_seconds")
+    if runner == "bubblewrap":
+        import math
+        from urllib.parse import urlsplit
+
+        if (
+            (cli_overrides or {}).get("time_limit_secs") is not None
+            or "time_limit_seconds" in user.get("run", {})
+            or "time_allocation" in user.get("control", {})
+            or "cost_cap" in user.get("control", {})
+            or "time_allocation" in user
+        ):
+            raise ConfigError("single-model runs use run.max_steps and external stop signals; remove task deadlines, time_allocation and cost caps")
+        cfg["ensemble"]["enabled"] = False
+        cfg["operators"]["synthesis"]["enabled"] = False
+        cfg["final"]["allow_ensemble"] = False
+        cfg["final"]["enabled"] = True
+        cfg["review"]["enabled"] = True
+        cfg["review"]["mode"] = "always"
+        url = urlsplit(cfg["llm"]["base_url"])
+        if cfg["llm"]["base_url"].rstrip("/") not in ("https://api.deepseek.com", "https://api.deepseek.com/v1") and (
+            url.scheme != "http" or url.hostname not in ("127.0.0.1", "::1", "localhost") or url.username or url.password
+        ):
+            raise ConfigError("single-model llm.base_url requires official DeepSeek HTTPS or a local fixture")
+        if any(cfg["llm"][group]["model"] != "deepseek-flash" for group in ("generation", "judgement")):
+            raise ConfigError("single-model runs use deepseek-flash")
+        limits = cfg["llm"]["request_limits"]
+        if any(not math.isfinite(n) or n <= 0 for n in limits.values()) or cfg["llm"]["max_in_flight"] < 0:
+            raise ConfigError("llm request limits must be finite and positive; max_in_flight must be nonnegative")
+        if min(limits[key] for key in ("short_attempt_seconds", "plan_review_attempt_seconds", "code_attempt_seconds")) < limits["connect_seconds"]:
+            raise ConfigError("llm absolute attempt limits must cover connect_seconds")
+    if cfg["experience"]["planning"] not in ("single","two_stage","evidence") or not -1<=cfg["experience"]["min_similarity"]<=1:
+        raise ConfigError("invalid experience planning mode or cosine threshold")
+    if cfg["review"]["mode"] not in ("always","risk"):
+        raise ConfigError("invalid review mode")
+    if cfg["review"]["sensitive_effort"] not in ("off","low","high","max"):
+        raise ConfigError("invalid review.sensitive_effort")
+    adaptive=cfg["control"]["adaptive"]
+    if not 0<adaptive["admission_quantile"]<=1 or min(adaptive["explore_every"],adaptive["initial_script_seconds"],adaptive["initial_other_seconds"])<1 or adaptive["max_rung"]<0 or adaptive["initial_operation_cost"]<0:
+        raise ConfigError("invalid control.adaptive quantile, exploration interval or time limits")
+    for role, policy in cfg["llm"]["role_policy"].items():
+        initial = policy["max_output_tokens"]
+        if initial < 1 or policy.get("recovery_max_output_tokens", initial) < initial:
+            raise ConfigError(f"invalid initial or recovery output limit for {role}")
+        if "reasoning_effort" in policy and policy["reasoning_effort"] not in ("low","high","max"):
+            raise ConfigError(f"invalid reasoning effort for {role}")
+        if "thinking" in policy and policy["thinking"] not in ("enabled","disabled"):
+            raise ConfigError(f"invalid thinking mode for {role}")
+        if "model" in policy and not str(policy["model"]).strip():
+            raise ConfigError(f"invalid model for {role}")
+        if "temperature" in policy and (policy["temperature"] < 0 or policy["temperature"] > 2):
+            raise ConfigError(f"invalid temperature for {role}")
+    if cfg["llm"]["operation_extra_sends"]<0:
+        raise ConfigError("operation_extra_sends must be nonnegative")
+    if cfg["llm"]["operation_rate_limit_retries"] < 0 or cfg["llm"]["max_context_tokens"] < 1:
+        raise ConfigError("operation_rate_limit_retries must be nonnegative and max_context_tokens must be positive")
     for path in POSITIVE_INT_KEYS:
         if get_path(cfg, path) < 1:
             raise ConfigError(f"config key '{'.'.join(path)}' must be at least 1")

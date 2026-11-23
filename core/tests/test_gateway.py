@@ -132,5 +132,5 @@ def test_unreachable_endpoint_gives_up(tmp_path):
     with pytest.raises(LLMUnavailableError):
         g.text("desc_cleaner", "s", "u")
     rows = read_jsonl(tmp_path / "calls.jsonl")
-    assert len(rows) == 3 and all(r["ok"] is False for r in rows)
+    assert len(rows) == 3 and all(not r["ok"] and r["cost"] == 0.0 for r in rows)
     assert "not-a-real-key" not in (tmp_path / "calls.jsonl").read_text()

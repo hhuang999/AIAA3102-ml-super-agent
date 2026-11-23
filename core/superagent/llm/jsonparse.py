@@ -9,6 +9,16 @@ from typing import Any
 _FENCE_RE = re.compile(r"```(?:json|JSON)?\s*\n?(.*?)```", re.DOTALL)
 
 
+def parse_complete_object(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    fenced = _FENCE_RE.fullmatch(stripped)
+    try:
+        value = json.loads(fenced.group(1) if fenced else stripped)
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def _escape_control_chars_in_strings(text: str) -> str:
     """Escape raw newlines, carriage returns and tabs that appear inside JSON strings."""
     out: list[str] = []

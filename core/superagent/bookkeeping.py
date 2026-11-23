@@ -17,33 +17,38 @@ from .utils import atomic_write_json, atomic_write_text, now_iso
 log = logging.getLogger("superagent")
 
 INTERFACE_VERSION = "1.1"
-VAL_FILES = ("val_predictions.csv", "val_labels.csv")
+VAL_FILES = ("val_predictions.csv", "val_labels.csv", "val_probabilities.csv", "test_probabilities.csv")
 
 
 # --------------------------------------------------------------------------- experience
 
 def save_experience(ctx: RunContext, node: Node) -> None:
-    if ctx.experience is None or not node.ok:
+    if ctx.experience is None:
+        return
+    diagnostic=not node.ok and bool(set(node.failure_reasons) & {"task_contract","timeout","runtime_error","data_leak","policy_violation"})
+    if not node.ok and not diagnostic:
         return
     parent = node.parent
     parent_score = parent.score if parent is not None and parent.ok else None
     error_text = None
     if node.kind == "repair" and parent is not None:
         error_text = trim_with(ctx.cfg, parent.output)
+    with ctx.tree.lock:
+        ref_scores = [n.score for n in ctx.tree.nodes if n is not node and n.ok and n.score is not None]
+    eff_kind = "diagnostic" if diagnostic else node.kind
     rec = Record(
         record_id=node.id,
-        kind=node.kind,
+        kind=eff_kind,
         plan=node.plan,
         method_summary=node.method_summary or node.plan[:500],
-        effect=effect_label(node.kind, node.score, parent_score, ctx.direction.better),  # type: ignore[arg-type]
+        effect=effect_label(eff_kind, node.score, parent_score, ctx.direction.better, ref_scores, ok=node.ok),  # type: ignore[arg-type]
         score=node.score,
         parent_score=parent_score,
         exec_seconds=node.exec_seconds,
-        error_text=error_text,
+        error_text=(node.summary or node.error_message) if diagnostic else error_text,
         created_at=now_iso(),
     )
-    with ctx.io_lock:
-        ctx.experience.add(rec)
+    ctx.experience.add(rec)
 
 
 # --------------------------------------------------------------------------- serialisation
@@ -65,6 +70,10 @@ def node_json(ctx: RunContext, n: Node) -> dict[str, Any]:
         "summary": n.summary,
         "method_summary": n.method_summary,
         "score": n.score,
+        "parent_gain":n.parent_gain,"global_gain":n.global_gain,"complementarity":n.complementarity,
+        "trial_id":n.trial_id, "rung":n.rung, "checkpoint":n.checkpoint,
+        "artifact_verification": n.artifact_verification,
+        "continuation_verification": n.continuation_verification,
         "score_source": n.score_source,
         "failed": n.failed,
         "predictions_ok": n.predictions_ok,
@@ -107,13 +116,24 @@ def score_json(ctx: RunContext, n: Node) -> dict[str, Any]:
 
 def status_payload(ctx: RunContext, status: str, error: str | None = None, ensemble_available: bool = False,
                    final: dict[str, Any] | None = None) -> dict[str, Any]:
+    from .publication import latest
+
+    if final is None:
+        final = latest(ctx.paths.root)
     tree = ctx.tree
+    formal = ctx.flags.get("formal")
+    identity = {
+        "run_id": ctx.flags["task_facts"]["run_id"],
+        "claimed_operations": ctx.flags.get("claimed_steps", 0),
+        "final_version_id": final.get("version_id") if final else None,
+    } if formal else {}
     with tree.lock:
         sol = [n for n in tree.nodes if not n.is_root]
         best = tree.best
         branches = {n.branch_id for n in sol if n.branch_id is not None}
         return {
             "interface_version": INTERFACE_VERSION,
+            **identity,
             "status": status,
             "stop_reason": ctx.stop_reason if status != "running" else None,
             "started_at": ctx.started_at,
@@ -132,7 +152,7 @@ def status_payload(ctx: RunContext, status: str, error: str | None = None, ensem
             "final_kind": final.get("kind") if final else None,
             "final_method": final.get("method") if final else None,
             "final_metric": final.get("metric") if final else None,
-            "final_validation_score": (final.get("validation") or {}).get("score") if final else None,
+            "final_validation_score": (final.get("validation") or {}).get("score", final.get("score")) if final else None,
             "error": error,
         }
 
@@ -235,7 +255,7 @@ def apply_retention(ctx: RunContext, top: list[Node]) -> None:
     with ctx.tree.lock:
         evaluated = [n for n in ctx.tree.nodes if not n.is_root and n.evaluated]
     for n in evaluated:
-        if n.id in keep or not n.has_artifacts:
+        if n.id in keep or n.id in ctx.flags.get("artifact_leases", ()) or not n.has_artifacts:
             continue
         md = _model_dir(ctx, n)
         if md.exists():
@@ -246,7 +266,7 @@ def apply_retention(ctx: RunContext, top: list[Node]) -> None:
 def after_assessment_files(ctx: RunContext, n: Node) -> None:
     """Run-directory housekeeping right after a node is assessed."""
     out = ctx.executor.run_dir(n.id) / "out"
-    if n.is_failed:
+    if n.is_failed and n.id != ctx.flags.get("repairable_id"):
         shutil.rmtree(out, ignore_errors=True)
         n.has_artifacts = False
         return
@@ -285,6 +305,15 @@ def update_rankings(ctx: RunContext, n: Node | None) -> tuple[bool, bool]:
             ctx.add_event("new_global_best", n.id, f"score {n.score}", step=n.step)
         written_best = ctx.flags.get("written_best_id")
         if best is not None and written_best != best.id:
+            from .publication import incumbent
+            import time
+            started=time.monotonic()
+            if not ctx.flags.get("formal") and getattr(ctx, "task_spec", None) is not None:
+                incumbent(ctx, best)
+            if ctx.control is not None and ctx.control.name=="adaptive":
+                elapsed_pub = time.monotonic() - started
+                with ctx.state_lock:
+                    ctx.control.publish_seconds.append(elapsed_pub)
             write_best(ctx, best)
             ctx.flags["written_best_id"] = best.id  # type: ignore[assignment]
         top_ids = [x.id for x in new_top]

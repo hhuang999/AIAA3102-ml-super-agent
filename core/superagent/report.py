@@ -9,35 +9,60 @@ from typing import Any
 
 from .bookkeeping import INTERFACE_VERSION
 from .context import RunContext
+from .llm.ledger import NO_BILLING_STATUSES
 from .scheduling import attempts_since_branch_best
 from .selection import explore_weight
 from .utils import atomic_write_json, atomic_write_text, now_iso, read_jsonl
 
-OPERATORS = ("draft", "refine", "repair", "retrospect", "borrow", "synthesis")
+OPERATORS = ("draft", "refine", "repair", "retrospect", "borrow", "synthesis", "promote")
 PLAN_PREVIEW = 300
 EFFECTIVE_BRANCH_WINDOW = 10
 TRIGGERED_OPERATORS = ("retrospect", "borrow", "synthesis")
 
 
 def _llm_usage(ctx: RunContext) -> dict[str, Any]:
-    rows = read_jsonl(ctx.paths.llm_calls)
-    total: dict[str, Any] = {"calls": 0, "failed_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0,
-                             "cost": 0.0, "currency": ctx.cfg["llm"].get("currency", "")}
-    by_agent: dict[str, dict[str, Any]] = defaultdict(lambda: {"calls": 0, "failed_calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
-                                                              "reasoning_tokens": 0, "cost": 0.0})
-    by_model: dict[str, dict[str, Any]] = defaultdict(lambda: {"calls": 0, "failed_calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
-                                                              "reasoning_tokens": 0, "cost": 0.0})
+    formal = getattr(ctx, "flags", {}).get("formal")
+    if formal:
+        ledger = ctx.gateway.ledger
+        with ledger.db() as db:
+            raw = db.execute("SELECT role, status, usage FROM attempts ORDER BY started").fetchall()
+        import json
+
+        rows = []
+        for role, status, payload in raw:
+            usage = json.loads(payload) if payload else {}
+            rows.append({"agent": role, "model": usage.get("model") or ctx.cfg["llm"]["generation"]["model"],
+                         "status": status, "ok": status == "received", "prompt_tokens": usage.get("input_tokens"),
+                         "completion_tokens": usage.get("output_tokens"), "reasoning_tokens": usage.get("reasoning_tokens")})
+    else:
+        rows = read_jsonl(ctx.paths.llm_calls)
+    late = {r["attempt_id"]: r for r in read_jsonl(ctx.paths.llm_calls.with_name("late_usage.jsonl"))}
+
+    def empty() -> dict[str, Any]:
+        return dict(calls=0, failed_calls=0, prompt_tokens=0, completion_tokens=0, reasoning_tokens=0,
+                    cost=0.0, unknown_usage=0)
+
+    total = empty()
+    total["currency"] = ctx.cfg["llm"].get("currency", "")
+    by_agent = defaultdict(empty)
+    by_model = defaultdict(empty)
     for r in rows:
+        usage = late.get(r.get("attempt_id"), r)
         for bucket in (total, by_agent[str(r.get("agent"))], by_model[str(r.get("model"))]):
             bucket["calls"] += 1
             if not r.get("ok"):
                 bucket["failed_calls"] += 1
-            bucket["prompt_tokens"] += r.get("prompt_tokens") or 0
-            bucket["completion_tokens"] += r.get("completion_tokens") or 0
-            bucket["reasoning_tokens"] += r.get("reasoning_tokens") or 0
-            bucket["cost"] += r.get("cost") or 0.0
+            bucket["prompt_tokens"] += usage.get("prompt_tokens") or 0
+            bucket["completion_tokens"] += usage.get("completion_tokens") or 0
+            bucket["reasoning_tokens"] += usage.get("reasoning_tokens") or 0
+            bucket["cost"] += usage.get("cost") or 0.0
+            if r.get("status") not in NO_BILLING_STATUSES:
+                bucket["unknown_usage"] += (usage.get("prompt_tokens") is None or usage.get("completion_tokens") is None
+                                            if formal else usage.get("cost") is None)
     for bucket in [total, *by_agent.values(), *by_model.values()]:
-        bucket["cost"] = round(bucket["cost"], 6)
+        bucket["cost"] = None if formal else round(bucket["cost"], 6)
+    if formal:
+        total["accounting"] = "adapter"
     total["by_agent"] = dict(by_agent)
     total["by_model"] = dict(by_model)
     return total
@@ -56,7 +81,7 @@ def _embedding_usage(ctx: RunContext) -> dict[str, Any]:
 def _final_view(final: dict[str, Any] | None) -> dict[str, Any] | None:
     if final is None:
         return None
-    keys = ("available", "kind", "method", "metric", "encoding", "reason", "validation", "members", "candidates",
+    keys = ("available", "kind", "node_id", "score", "method", "metric", "encoding", "reason", "validation", "members", "candidates",
             "metric_identification", "decided_by_tie_break")
     return {k: final.get(k) for k in keys if k in final}
 
@@ -337,9 +362,11 @@ def render_markdown(s: dict[str, Any]) -> str:
     for r, n in s["failures"]["by_reason"].items():
         lines.append(f"- {r}: {n}")
     llm = res["llm"]
+    amount = "price using Adapter cost" if llm.get("accounting") == "adapter" else f"known cost {llm['cost']} {llm['currency']}"
     lines += ["", "## Resource usage", "",
-              f"- LLM calls: {llm['calls']} ({llm['failed_calls']} failed); prompt tokens {llm['prompt_tokens']}, completion tokens "
-              f"{llm['completion_tokens']} (reasoning {llm['reasoning_tokens']}); cost {llm['cost']} {llm['currency']}",
+              f"- LLM HTTP attempts: {llm['calls']} ({llm['failed_calls']} failed); prompt tokens {llm['prompt_tokens']}, "
+              f"completion tokens {llm['completion_tokens']} (reasoning {llm['reasoning_tokens']}); "
+              f"{amount}; attempts without usage {llm['unknown_usage']}",
               f"- Embedding: {res['embedding']['calls']} calls, {res['embedding']['tokens']} tokens, cost {res['embedding']['cost']} {res['embedding']['currency']}",
               f"- Script runs: {res['exec']['num_runs']} ({res['exec']['num_timeouts']} timeouts), total {res['exec']['total_script_seconds']} s",
               "", "| agent | calls | prompt tokens | completion tokens | cost |", "|---|---|---|---|---|"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import shutil
 from pathlib import Path
 from typing import Any, Sequence
@@ -38,9 +39,20 @@ def weights(scores: Sequence[float], higher_is_better: bool, strategy: str | Non
     Ties in a vote go to the higher-ranked member.
     """
     k = len(scores)
+    if k == 0:
+        return []
     if strategy in VOTE_STRATEGIES:
         return [1.0 / k] * k
-    base = [s if higher_is_better else 1.0 / (s + EPS) for s in scores]
+    if any(s <= 0 for s in scores):
+        lo, hi = min(scores), max(scores)
+        if hi == lo:
+            base = [1.0] * k
+        elif higher_is_better:
+            base = [1.0 + (s - lo) / (hi - lo) for s in scores]
+        else:
+            base = [1.0 + (hi - s) / (hi - lo) for s in scores]
+    else:
+        base = [s if higher_is_better else 1.0 / (s + EPS) for s in scores]
     raw = [b * (k - i) for i, b in enumerate(base)]
     total = sum(raw)
     if total == 0:
@@ -102,14 +114,16 @@ def _align(frames: list[pd.DataFrame], id_col: str | None) -> list[pd.DataFrame]
     out = [first.reset_index(drop=True)]
     for f in frames[1:]:
         aligned = None
-        if id_col is not None and id_col in f.columns and not f[id_col].duplicated().any():
-            try:
-                g = f.set_index(f[id_col].astype(str).str.strip())
-                keys = first[id_col].astype(str).str.strip()
-                if set(keys) <= set(g.index):
-                    aligned = g.loc[keys.tolist()].reset_index(drop=True)
-            except Exception:  # noqa: BLE001
-                aligned = None
+        if id_col is not None and id_col in f.columns:
+            stripped_id = f[id_col].astype(str).str.strip()
+            if not stripped_id.duplicated().any():
+                try:
+                    g = f.set_index(stripped_id)
+                    keys = first[id_col].astype(str).str.strip()
+                    if set(keys) <= set(g.index):
+                        aligned = g.loc[keys.tolist()].reset_index(drop=True)
+                except Exception:  # noqa: BLE001
+                    aligned = None
         if aligned is None:
             aligned = f.reset_index(drop=True).reindex(range(len(first)))
         out.append(aligned)
@@ -131,9 +145,22 @@ def _vote(values: list[str], w: Sequence[float]) -> str:
 
 
 def combine(frames: list[pd.DataFrame], w: Sequence[float], fmt: dict[str, Any]) -> pd.DataFrame:
+    import numpy as np
     frames = _align(frames, fmt["id_col"])
-    out = frames[0].copy()
     strat = fmt["strategy"]
+    if strat == "prob_argmax":
+        prob_cols = list(fmt["prob_cols"])
+        out = pd.DataFrame({fmt["id_col"]: frames[0][fmt["id_col"]].values})
+        mat = None
+        for f, wt in zip(frames, w):
+            arr = f[prob_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+            row_sums = arr.sum(axis=1, keepdims=True)
+            arr = arr / np.where(row_sums > 0, row_sums, 1.0)
+            mat = arr * float(wt) if mat is None else mat + arr * float(wt)
+        best_idx = mat.argmax(axis=1)
+        out[fmt["pred_cols"][0]] = [prob_cols[int(i)] for i in best_idx]
+        return out[fmt["columns"]]
+    out = frames[0].copy()
     for c in fmt["pred_cols"]:
         cols = [f[c] if c in f.columns else pd.Series([None] * len(out)) for f in frames]
         if strat == "average":
@@ -161,7 +188,10 @@ def combine(frames: list[pd.DataFrame], w: Sequence[float], fmt: dict[str, Any])
     return out[fmt["columns"]]
 
 
-SCRIPT_HELPERS = '''def vote(values, weights):
+SCRIPT_HELPERS = '''import numpy as np
+
+
+def vote(values, weights):
     acc, order = {}, {}
     for i, (v, w) in enumerate(zip(values, weights)):
         if v is None or (isinstance(v, float) and pd.isna(v)):
@@ -179,11 +209,13 @@ def align(frames, id_col):
     out = [first.reset_index(drop=True)]
     for f in frames[1:]:
         aligned = None
-        if id_col is not None and id_col in f.columns and not f[id_col].duplicated().any():
-            g = f.set_index(f[id_col].astype(str).str.strip())
-            keys = first[id_col].astype(str).str.strip()
-            if set(keys) <= set(g.index):
-                aligned = g.loc[keys.tolist()].reset_index(drop=True)
+        if id_col is not None and id_col in f.columns:
+            stripped_id = f[id_col].astype(str).str.strip()
+            if not stripped_id.duplicated().any():
+                g = f.set_index(stripped_id)
+                keys = first[id_col].astype(str).str.strip()
+                if set(keys) <= set(g.index):
+                    aligned = g.loc[keys.tolist()].reset_index(drop=True)
         if aligned is None:
             aligned = f.reset_index(drop=True).reindex(range(len(first)))
         out.append(aligned)
@@ -192,6 +224,18 @@ def align(frames, id_col):
 
 def combine(frames, weights, fmt):
     frames = align(frames, fmt["id_col"])
+    if fmt.get("strategy") == "prob_argmax":
+        prob_cols = list(fmt["prob_cols"])
+        out = pd.DataFrame({fmt["id_col"]: frames[0][fmt["id_col"]].values})
+        mat = None
+        for f, w in zip(frames, weights):
+            arr = f[prob_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+            row_sums = arr.sum(axis=1, keepdims=True)
+            arr = arr / np.where(row_sums > 0, row_sums, 1.0)
+            mat = arr * float(w) if mat is None else mat + arr * float(w)
+        best_idx = mat.argmax(axis=1)
+        out[fmt["pred_cols"][0]] = [prob_cols[int(i)] for i in best_idx]
+        return out[fmt["columns"]]
     out = frames[0].copy()
     for c in fmt["pred_cols"]:
         cols = [f[c] if c in f.columns else pd.Series([None] * len(out)) for f in frames]
@@ -259,7 +303,7 @@ def run_ensemble(output_dir: Path, top: list[dict[str, Any]], higher_is_better: 
         pred = Path(output_dir) / "top" / f"rank_{t['rank']:02d}" / "predictions.csv"
         if not pred.exists():
             continue
-        if not higher_is_better and t["score"] is not None and t["score"] < 0:
+        if t.get("score") is None or not math.isfinite(float(t["score"])):
             continue
         cands.append({**t, "path": pred})
         if len(cands) >= int(cfg["max_candidates"]):

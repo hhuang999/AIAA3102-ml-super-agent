@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import statistics
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -48,7 +49,32 @@ def load_plan(path: Path) -> dict[str, Any]:
 
 def _status(out: Path) -> dict[str, Any] | None:
     f = out / "status.json"
-    return json.loads(f.read_text()) if f.exists() else None
+    if not f.exists():
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def _archive_incomplete(out: Path) -> Path | None:
+    if not out.exists():
+        return None
+    try:
+        has_content = any(out.iterdir())
+    except OSError:
+        has_content = False
+    if not has_content:
+        return None
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest = out.with_name(f"{out.name}.incomplete_{ts}")
+    idx = 1
+    while dest.exists():
+        dest = out.with_name(f"{out.name}.incomplete_{ts}_{idx}")
+        idx += 1
+    out.rename(dest)
+    return dest
 
 
 def run_one(plan: Mapping[str, Any], run: Mapping[str, Any], base: Path) -> dict[str, Any]:
@@ -56,6 +82,7 @@ def run_one(plan: Mapping[str, Any], run: Mapping[str, Any], base: Path) -> dict
     out = (base / run["output_dir"]).resolve()
     status = _status(out)
     if status is None or status.get("status") not in FINISHED:
+        _archive_incomplete(out)
         options = {**(plan.get("options") or {}), **(run.get("options") or {})}
         config = plan.get("config")
         cmd = core_command(plan["core_python"], task, out, (base / config).resolve() if config else None, options)

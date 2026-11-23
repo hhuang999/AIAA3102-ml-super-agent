@@ -104,8 +104,10 @@ class RunContext:
     flags: dict[str, Any] = field(default_factory=dict)
     control: "Controller | None" = None
     gpu_info: GpuInfo | None = None
+    task_spec: Any = None
     active_tasks: int = 0
     step_timings: list[StepTiming] = field(default_factory=list)
+    catalog_entries: list[dict[str, Any]] = field(default_factory=list)
     _local: threading.local = field(default_factory=threading.local)
 
     # ---------------------------------------------------------------- clocks
@@ -119,9 +121,13 @@ class RunContext:
 
     @property
     def reserve(self) -> float:
+        if self.control is not None and self.control.name=="adaptive":
+            return self.control.reserve()
         return float(self.cfg["run"]["finalize_reserve_seconds"])
 
     def time_left(self) -> float:
+        if self.flags.get("formal"):
+            return float("inf")
         return self.deadline - time.monotonic()
 
     def elapsed(self) -> float:
@@ -155,6 +161,11 @@ class RunContext:
     def should_abort_generation(self) -> bool:
         return self.hard_event.is_set() or self.time_left() <= self.reserve
 
+    def generation_window_expired(self) -> bool:
+        """Protect the execution estimate of the current worker's admitted action."""
+        execution = getattr(self._local, "generation_execution_reserve", 0.0)
+        return execution > 0 and self.time_left() <= self.reserve + execution
+
     def steps_left(self) -> int:
         return max(0, int(self.cfg["run"]["max_steps"]) - len(self.tree.solution_nodes()))
 
@@ -183,6 +194,8 @@ class RunContext:
 
     def current_run_limit(self) -> float:
         """Script time limit for the current thread's step; never beyond the time left."""
+        if self.flags.get("formal"):
+            return float(self.cfg["execution"]["script_timeout_seconds"])
         lim = self.current_limits()
         hard = self.time_left() - self.reserve
         if lim is None:
@@ -210,6 +223,13 @@ class RunContext:
             self.step_timings.append(timing)
 
     def resources(self) -> Resources:
+        if self.flags.get("formal"):
+            return Resources(
+                time_left_secs=0, steps_left=max(0, self.cfg["run"]["max_steps"] - self.flags.get("claimed_steps", 0)),
+                run_limit_secs=self.current_run_limit(), cpus_per_run=self.executor.cores_per_slot,
+                num_gpus=self.executor.num_gpus, mode=self.mode, smoke_seconds=self.smoke_seconds(),
+                external_stop=True,
+            )
         lim = self.current_limits()
         if lim is None:
             return Resources(

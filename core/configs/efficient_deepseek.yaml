@@ -1,0 +1,8 @@
+# Cost-efficient DeepSeek profile: preserves full thinking on planning and initial drafts,
+# while disabling unthrottled thinking on mechanical patch/repair code edits.
+llm:
+  role_policy:
+    patch_coder:
+      thinking: "disabled"
+    repair_coder:
+      thinking: "disabled"

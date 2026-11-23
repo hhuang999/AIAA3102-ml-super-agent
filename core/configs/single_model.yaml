@@ -1,0 +1,23 @@
+verification:
+  runner: bubblewrap
+  timeout_seconds: 300
+run:
+  max_steps: 5
+search:
+  initial_drafts: 2
+resources:
+  num_gpus: 0
+  num_cpus: 2
+  parallel: 2
+pretrained:
+  mode: "off"
+ensemble:
+  enabled: false
+operators:
+  synthesis:
+    enabled: false
+final:
+  enabled: true
+  allow_ensemble: false
+codegen:
+  staged_drafting: false

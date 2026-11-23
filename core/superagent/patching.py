@@ -24,6 +24,7 @@ class ParsedPatch:
     blocks: list[PatchBlock]
     n_start: int
     n_end: int
+    unfinished_searches: list[str]
 
     @property
     def truncated(self) -> bool:
@@ -35,6 +36,7 @@ def parse_patch(text: str) -> ParsedPatch:
     n_start = sum(1 for ln in lines if _START_RE.match(ln))
     n_end = sum(1 for ln in lines if _END_RE.match(ln))
     blocks: list[PatchBlock] = []
+    unfinished = []
     i = 0
     while i < len(lines):
         if not _START_RE.match(lines[i]):
@@ -54,11 +56,13 @@ def parse_patch(text: str) -> ParsedPatch:
             replace.append(lines[k])
             k += 1
         if k >= len(lines) or not _END_RE.match(lines[k]):
+            if search:
+                unfinished.append("\n".join(search))
             i = k
             continue
         blocks.append(PatchBlock("\n".join(search), "\n".join(replace)))
         i = k + 1
-    return ParsedPatch(blocks, n_start, n_end)
+    return ParsedPatch(blocks, n_start, n_end, unfinished)
 
 
 def text_before_first_block(text: str) -> str:
@@ -86,25 +90,32 @@ def apply_block(code: str, block: PatchBlock) -> tuple[str, bool]:
     if not block.search.strip():
         sep = "" if code.endswith("\n") or not code else "\n"
         return code + sep + "\n" + block.replace + ("\n" if not block.replace.endswith("\n") else ""), True
-    if block.search in code:
-        return code.replace(block.search, block.replace, 1), True
     search_lines = block.search.split("\n")
-    first_idx = next((i for i, ln in enumerate(search_lines) if ln.strip()), None)
-    if first_idx is None:
-        return code, False
-    search_lines = search_lines[first_idx:]
-    first = search_lines[0]
-    first_stripped = first.strip()
     code_lines = code.split("\n")
-    for ln in code_lines:
-        if ln.strip() != first_stripped:
+    normalized = [line.rstrip() for line in code_lines]
+    length = len(search_lines)
+    exact = []
+    shifted = []
+    for i in range(len(code_lines) - length + 1):
+        first = normalized[i]
+        if first.strip() != search_lines[0].strip():
             continue
-        shift = _indent_width(ln) - _indent_width(first)
-        adjusted = "\n".join(_shift_lines(search_lines, shift))
-        if adjusted and adjusted in code:
-            replacement = "\n".join(_shift_lines(block.replace.split("\n"), shift))
-            return code.replace(adjusted, replacement, 1), True
-    return code, False
+        window = normalized[i:i + length]
+        if window == search_lines:
+            exact.append((i, 0))
+            continue
+        shift = _indent_width(first) - _indent_width(search_lines[0])
+        if window == _shift_lines(search_lines, shift):
+            shifted.append((i, shift))
+    matches = exact or shifted
+    if len(matches) != 1:
+        return code, False
+    index, shift = matches[0]
+    replacement = block.replace.split("\n") if block.replace else []
+    if shift:
+        replacement = _shift_lines(replacement, shift)
+    code_lines[index:index + length] = replacement
+    return "\n".join(code_lines), True
 
 
 def apply_patch(code: str, patch_text: str) -> tuple[str, int]:

@@ -20,6 +20,7 @@ from .context import MIN_SCRIPT_SECONDS, RunContext
 from .control.base import StepLimits
 from .control.state import StepTiming, build_state
 from .errors import LLMUnavailableError
+from .llm.ledger import PermanentCall
 from .executor import ExecResult
 from .operators import GenOutcome, Operators
 from .review import apply_policy, review
@@ -33,7 +34,7 @@ log = logging.getLogger("superagent")
 LLM_FAILURE_STREAK_LIMIT = 10
 MAIN_POLL_SECONDS = 0.5
 FINISH_CHECK_SECONDS = 5.0
-CREATING_ACTIONS = ("draft", "refine", "repair", "retrospect", "borrow")
+CREATING_ACTIONS = ("draft", "refine", "repair", "retrospect", "borrow","promote")
 
 
 @dataclass
@@ -54,11 +55,12 @@ class StepRecord:
     new_node: Node | None = None
     outcome: dict[str, Any] = field(default_factory=dict)
     limits: StepLimits | None = None
+    execution_estimate: float = 0.0
     started: float = field(default_factory=time.monotonic)
 
 
 class Discarded(Exception):
-    """The step was abandoned because the run is shutting down."""
+    """The step was abandoned before evaluation."""
 
 
 class SearchController:
@@ -72,7 +74,10 @@ class SearchController:
         self.seq = 0
         self.workers: list[threading.Thread] = []
         self.time_stop = False
+        self.starting = True
         self._pending_records: dict[str, StepRecord] = {}
+        from .control.adaptive import AdaptiveController
+        self.shadow = AdaptiveController(ctx) if ctx.cfg["control"]["adaptive"]["shadow"] and getattr(ctx.control, "name", None) != "adaptive" else None
 
     def _add_active(self, delta: int) -> None:
         """Change the number of queued or running tasks. Caller holds ``self._lock``."""
@@ -102,6 +107,9 @@ class SearchController:
 
     # ------------------------------------------------------------------ public
     def run(self) -> None:
+        if self.ctx.flags.get("formal"):
+            self._run_formal()
+            return
         ctx = self.ctx
         parallel = int(ctx.cfg["resources"]["parallel"])
         for i in range(parallel):
@@ -112,6 +120,11 @@ class SearchController:
         self._main_loop()
 
     # ------------------------------------------------------------------ startup
+    def _run_formal(self):
+        from .operations import Operations
+
+        Operations(self).run()
+
     def _startup(self) -> None:
         """Write the initial drafts and hand each one to the workers as soon as it is ready."""
         ctx = self.ctx
@@ -126,11 +139,22 @@ class SearchController:
             if ctx.stop_event.is_set() or not self._may_start():
                 break
             rec = StepRecord(selected=root, mode="initial")
+            if getattr(ctx.control,"name",None)=="adaptive":
+                state=build_state(ctx)
+                need,rec.execution_estimate=ctx.control.estimate("draft",state)
+                if need>state.usable_secs:
+                    break
             d = dispatch(ctx.tree, root, ctx.search_cfg(), ctx.progress(), ctx.rng)  # type: ignore[arg-type]
             rec.action, rec.reason = d.action, d.reason
             if d.action != "draft":
                 break
             recs.append(rec)
+
+        if len(recs) > 1:
+            from .catalog import assign_draft_hypotheses
+            hyps = assign_draft_hypotheses(ctx.catalog_entries, ctx.modalities, len(recs))
+            for rec_item, hyp in zip(recs, hyps):
+                rec_item.details["assigned_hypothesis"] = hyp
 
         stagger = float(ctx.cfg["execution"]["draft_launch_stagger_seconds"])
         launched = 0
@@ -141,7 +165,7 @@ class SearchController:
             if last_launch is not None:
                 wait = stagger - (time.monotonic() - last_launch)
                 if wait > 0:
-                    ctx.stop_event.wait(wait)
+                    ctx.stop_event.wait(min(wait,max(0,ctx.time_left()-ctx.reserve)))
             with self._lock:
                 self._add_active(1)
             self._pending_records[node.id] = rec
@@ -174,31 +198,55 @@ class SearchController:
                 self._add_active(1)
             self.queue.put(Task("search"))
         with self._lock:
+            self.starting = False
             if self.active == 0:
                 self.done.set()
 
     def _write_initial_draft(self, rec: StepRecord) -> Node | None:
         """Generate and pre-check one initial draft. Returns None (and frees the slot) on failure."""
+        self.ctx._local.generation_execution_reserve = rec.execution_estimate
+        try:
+            return self._generate_initial_draft(rec)
+        finally:
+            self.ctx._local.generation_execution_reserve = 0.0
+
+    def _generate_initial_draft(self, rec: StepRecord) -> Node | None:
         ctx = self.ctx
         root = ctx.tree.root
         rec.started = time.monotonic()
         self._limits_for(rec)
+        assigned_hyp = rec.details.get("assigned_hypothesis")
+        if assigned_hyp:
+            ctx._local.selected_hypothesis = assigned_hyp
         try:
-            gen = self.ops.draft(root)
+            gen = self.ops.generate("draft",root)
         except Exception as exc:  # noqa: BLE001
             with ctx.tree.lock:
                 root.pending_children = max(0, root.pending_children - 1)
             if isinstance(exc, LLMUnavailableError):
-                with self._lock:
-                    ctx.llm_failure_streak += 1
+                if ctx.stop_event.is_set() or ("deadline" in str(exc) and ctx.generation_window_expired()):
+                    rec.details["generation_cutoff"] = True
+                    self._discard(root, None, False, None, rec)
+                else:
+                    with self._lock:
+                        ctx.llm_failure_streak += 1
             log.error("initial draft generation failed: %s", exc)
             return None
+        finally:
+            if assigned_hyp:
+                ctx._local.selected_hypothesis = None
         node = gen.node
         assert node is not None
         rec.details.update(gen.details)
         rec.new_node = node
         if not node.is_failed:
-            self._prerun(node, rec)
+            try:
+                self._prerun(node, rec)
+            except LLMUnavailableError as exc:
+                if "deadline" in str(exc) and ctx.generation_window_expired():
+                    rec.details["generation_cutoff"] = True
+                self._suspend_review(root,node,rec,exc)
+                return None
         log.info("initial draft %s generated (%s)", node.id, rec.details.get("codegen"))
         return node
 
@@ -219,13 +267,14 @@ class SearchController:
                     log.warning("controller.should_finish failed: %s", exc)
                     fin = None
                 if fin is not None and fin.allow:
-                    ctx.stop_reason = fin.reason or "controller"
+                    ctx.stop_reason = ctx.stop_reason or fin.reason or "controller"
                     ctx.add_event("controller_finish", None, f"{ctx.stop_reason}: {fin.details}")
                     log.info("the controller finished the search: %s %s", ctx.stop_reason, fin.details)
                     ctx.stop_event.set()
             if ctx.stop_event.is_set() and ctx.stop_reason == "interrupted":
                 ctx.hard_event.set()
                 break
+            reserve=ctx.reserve
             if ctx.time_left() <= reserve:
                 ctx.hard_event.set()
                 ctx.stop_event.set()
@@ -268,7 +317,7 @@ class SearchController:
                 self._add_active(1)
                 self.queue.put(Task("search", follow, "chain" if follow is not None else None))
                 return
-            if self.active <= 0:
+            if self.active <= 0 and not self.starting:
                 self.done.set()
         if follow is not None:
             # The chain cannot continue: release the branch so other tasks may enter it again.
@@ -297,6 +346,11 @@ class SearchController:
                                                                     reason="root_has_capacity"))
             return self._step(rec, task.node.parent or ctx.tree.root, pre_generated=task.node)
         rec = StepRecord()
+        if ctx.control is not None and ctx.control.name=="adaptive":
+            return self._adaptive_step(task,rec)
+        if self.shadow is not None:
+            with ctx.tree.lock:
+                _, rec.details["adaptive_shadow"] = self.shadow.choose(build_state(ctx), reserve=False)
         scfg = ctx.search_cfg()
         ctx.tree.synthesis_time_ok = self._synthesis_time_ok(scfg)
         handled, result = self._synthesis_trigger(rec, task, scfg)
@@ -315,7 +369,7 @@ class SearchController:
                 p = ctx.progress()
                 sel = select(ctx.tree, scfg, p, lambda: synthesis_conditions(ctx.tree, scfg, ctx.progress()), ctx.rng)  # type: ignore[arg-type]
                 rec.selected, rec.mode, rec.weight = sel.node, sel.mode, sel.explore_weight
-                d = dispatch(ctx.tree, sel.node, scfg, p, ctx.rng)  # type: ignore[arg-type]
+                d = dispatch(ctx.tree, sel.node, scfg, p, ctx.rng, via_elite=(sel.mode == "elite_pick"))  # type: ignore[arg-type]
         except Exception as exc:  # noqa: BLE001
             log.error("selection failed: %s\n%s", exc, traceback.format_exc())
             rec.details["error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -325,6 +379,41 @@ class SearchController:
             self._write_decision(rec)
             return None
         return self._step(rec, rec.selected, dispatched=d)
+
+    def _adaptive_step(self,task,rec):
+        ctx=self.ctx
+        ctrl=ctx.control
+        with ctx.tree.lock:
+            if task.node is not None:
+                backpropagate(task.node,0.0,False)
+            state=build_state(ctx)
+            choice,why=ctrl.choose(state)
+        rec.details["admission"]=why
+        if choice is None:
+            rec.reason=why["reason"]
+            self._write_decision(rec)
+            if rec.reason in ("no_deliverable_action", "cost_warning", "cost_limit"):
+                ctx.stop_reason = ctx.stop_reason or rec.reason
+                ctx.stop_event.set()
+            else:
+                ctx.stop_event.wait(.5)
+            return None
+        n=choice.parent
+        rec.selected,rec.mode=n,"adaptive"
+        rec.limits=ctrl.step_limits(state)
+        rec.limits.run_limit_secs=(
+            ctrl.script_timeout(choice.execution, state)
+            if choice.action != "promote"
+            else min(state.usable_secs, float(ctx.cfg["execution"]["script_timeout_seconds"]), max(2.0, choice.execution * 1.4))
+        )
+        rec.execution_estimate = choice.execution
+        ctx._local.generation_execution_reserve = choice.execution if choice.action != "promote" else 0.0
+        try:
+            return self._step(rec,n,dispatched=Dispatch(choice.action,choice.reason))
+        finally:
+            ctx._local.generation_execution_reserve = 0.0
+            with ctx.tree.lock:
+                ctrl.leases.discard((n.id,choice.action))
 
     def _synthesis_time_ok(self, scfg: dict[str, Any]) -> bool:
         """Whether a synthesis step still fits in the usable time.
@@ -383,7 +472,7 @@ class SearchController:
             with tree.lock:
                 backpropagate(follow, 0.0, False)  # leave the chain; its branch is free again
                 node, mode = elite_pick(tree, scfg, p, lambda: synthesis_conditions(tree, scfg, ctx.progress()), ctx.rng)  # type: ignore[arg-type]
-                d = dispatch(tree, node, scfg, p, ctx.rng)  # type: ignore[arg-type]
+                d = dispatch(tree, node, scfg, p, ctx.rng, via_elite=(mode == "elite_pick"))  # type: ignore[arg-type]
         except Exception as exc:  # noqa: BLE001
             log.error("selection after leaving a chain failed: %s\n%s", exc, traceback.format_exc())
             rec.details["error"] = f"{type(exc).__name__}: {exc}"[:300]
@@ -397,6 +486,7 @@ class SearchController:
         ctx = self.ctx
         node: Node | None = pre_generated
         reserved = False
+        held_signature = None
         d: Dispatch | None = None
         self._limits_for(rec)
         try:
@@ -412,7 +502,18 @@ class SearchController:
                     self._write_decision(rec)
                     ctx.stop_event.wait(float(ctx.cfg["run"]["idle_backoff_seconds"]))
                     return None
-                gen: GenOutcome = self.ops.generate(d.action, parent)
+                if d.action=="promote":
+                    from .utils import new_id
+                    promoted=self.ops._new_node(new_id(),"promote",parent,parent.plan,parent.code)
+                    promoted.trial_id=parent.trial_id or parent.id
+                    promoted.rung=parent.rung+1
+                    gen=GenOutcome(promoted,"promote",{"resume_from":parent.id})
+                else:
+                    ctx._local.via_elite = bool(getattr(d, "via_elite", False))
+                    try:
+                        gen=self.ops.generate(d.action,parent)
+                    finally:
+                        ctx._local.via_elite = False
                 reserved = False
                 node = gen.node
                 rec.details.update(gen.details)
@@ -429,13 +530,35 @@ class SearchController:
                     ctx.add_event("plateau_response", node.id, f"{rec.action} on node {parent.id}")
                 if rec.details.get("escalated"):
                     ctx.add_event("escalated_prompt", node.id, f"escalated requirements for {rec.action}")
-                if not node.is_failed:
+                if not node.is_failed and node.kind!="promote":
                     self._prerun(node, rec)
             else:
                 rec.new_node = node
             self._check_shutdown()
             if not node.is_failed:
-                res = self._run(node)
+                if rec.execution_estimate and ctx.time_left() - ctx.reserve < rec.execution_estimate:
+                    rec.details["late_after_generation"] = True
+                    raise Discarded()
+                if ctx.control is not None and ctx.control.name=="adaptive":
+                    from .control.adaptive import code_signature, method_shape
+                    sign=(code_signature(node.code),node.rung)
+                    with ctx.tree.lock:
+                        if sign in ctx.control.scripts or any(
+                            x.ok and x.rung==node.rung and code_signature(x.code)==sign[0] for x in ctx.tree.nodes[1:]):
+                            ctx.control.exhausted.add((parent.id,rec.action))
+                            rec.details["duplicate_script"]=True
+                            raise Discarded()
+                        shape=method_shape(node.code)
+                        peers=[peer for peer,s in ctx.control.active_shapes.values() if s == shape]
+                        if peers:
+                            rec.details["similar_inflight"]={"nodes":peers,"decision":"allow changed code or a distinct training rung"}
+                        ctx.control.active_shapes[sign]=(node.id,shape)
+                        ctx.control.scripts.add(sign)
+                        held_signature = sign
+                    res=self._execute_or_restore(node)
+                else:
+                    res = self._execute_or_restore(node)
+
                 self._check_shutdown()
                 info = assess(ctx, node, res)
                 rec.details.update({k: v for k, v in info.items() if v})
@@ -445,24 +568,72 @@ class SearchController:
             after_assessment_files(ctx, node)
             self._check_shutdown()
             outcome = self._finish_node(parent, node, rec)
-            ctx.llm_failure_streak = 0
+            with self._lock:
+                ctx.llm_failure_streak = 0
             return None if outcome.returned_to_root else node
         except Discarded:
             self._discard(parent, node, reserved, d, rec)
             return None
         except Exception as exc:  # noqa: BLE001
-            if ctx.hard_event.is_set() or ctx.flags.get("finalizing"):
+            if ctx.hard_event.is_set() or ctx.flags.get("finalizing") or (isinstance(exc, LLMUnavailableError) and ctx.stop_event.is_set()):
+                if isinstance(exc, LLMUnavailableError) and ctx.stop_event.is_set():
+                    rec.details["generation_cutoff"] = True
                 self._discard(parent, node, reserved, d, rec)
                 return None
-            log.error("step failed with %s: %s\n%s", type(exc).__name__, exc, traceback.format_exc())
-            if isinstance(exc, LLMUnavailableError):
-                ctx.llm_failure_streak += 1
-                if ctx.llm_failure_streak >= LLM_FAILURE_STREAK_LIMIT:
-                    log.error("the LLM has been unavailable for %d tasks in a row; stopping the search", ctx.llm_failure_streak)
+            if (isinstance(exc, LLMUnavailableError) and "deadline" in str(exc)
+                    and ctx.generation_window_expired()):
+                rec.details["generation_cutoff"] = True
+                with ctx.tree.lock:
+                    ctx.control.exhausted.add((parent.id, rec.action))
+                if node is not None:
+                    self._suspend_review(parent, node, rec, exc)
+                else:
+                    self._discard(parent, None, reserved, d, rec)
+                return None
+            if ctx.control is not None and ctx.control.name=="adaptive" and node is None:
+                with ctx.tree.lock:
+                    ctx.control.censored.append((rec.action,time.monotonic()-rec.started))
+                if isinstance(exc, PermanentCall) or not isinstance(exc, LLMUnavailableError) or any(tag in str(exc) for tag in ("budget exhausted", "cost limit")):
+                    with ctx.tree.lock:
+                        ctx.control.exhausted.add((parent.id,rec.action))
+            from .llm.ledger import DeferredCall
+            if isinstance(exc, DeferredCall):
+                if exc.__cause__ is not None:
+                    log.warning("LLM route deferred: %s", exc)
+                ctx.stop_event.wait(min(1.0,max(0,ctx.time_left())))
+            elif isinstance(exc, LLMUnavailableError):
+                log.warning("LLM step failed: %s", exc)
+                with self._lock:
+                    ctx.llm_failure_streak += 1
+                    streak = ctx.llm_failure_streak
+                if streak >= LLM_FAILURE_STREAK_LIMIT:
+                    log.error("the LLM has been unavailable for %d tasks in a row; stopping the search", streak)
                     ctx.stop_reason = "error"
                     ctx.stop_event.set()
+            else:
+                log.exception('step failed')
+            if node is not None and isinstance(exc, LLMUnavailableError):
+                self._suspend_review(parent,node,rec,exc)
+                return None
             self._handle_error(parent, node, reserved, d, rec, exc)
             return None
+
+        finally:
+            if held_signature is not None:
+                with ctx.tree.lock:
+                    ctx.control.scripts.discard(held_signature)
+                    ctx.control.active_shapes.pop(held_signature,None)
+
+    def _suspend_review(self,parent,node,rec,exc):
+        ledger=getattr(self.ctx.gateway,"ledger",None)
+        terminal = isinstance(exc,PermanentCall) or any(s in str(exc) for s in ("budget exhausted","cost limit"))
+        if terminal and getattr(self.ctx.control,"name",None)=="adaptive":
+            with self.ctx.tree.lock:
+                self.ctx.control.exhausted.add((parent.id,rec.action))
+        if ledger:
+            ledger.state(node.id,"abandoned" if terminal else "suspended",max(0,self.ctx.gateway.cooldown_until-time.monotonic()))
+        rec.details["review_deferred"]=str(exc)
+        self._discard(parent,node,False,None,rec)
 
     def _check_shutdown(self) -> None:
         if self.ctx.flags.get("finalizing") or self.ctx.hard_event.is_set() and self.ctx.stop_reason == "interrupted":
@@ -473,21 +644,119 @@ class SearchController:
         try:
             outcome = review(ctx, node)
             rec.details["review_changed_code"] = outcome.changed
-        except Exception as exc:  # noqa: BLE001 - review must never block a run
+            if ctx.cfg["review"]["enabled"] and outcome.verdict != "pass" and not outcome.changed:
+                node.failed=True
+                node.failure_reasons.append("review_unresolved")
+                node.summary=outcome.findings
+        except LLMUnavailableError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - mark an unresolved review
             log.warning("review failed for %s: %s", node.id, exc)
             rec.details["review_changed_code"] = False
+            node.failed=True
+            node.failure_reasons.append("review_error")
+            node.summary=str(exc)
         if apply_policy(ctx, node):
             rec.details["policy_violation"] = True
+
+    def _execute_or_restore(self,node):
+        from dataclasses import asdict
+        from .llm.ledger import fingerprint
+        from .training import digest
+        ctx=self.ctx
+        ledger=getattr(ctx.gateway,"ledger",None)
+        sig=fingerprint([ctx.flags.get("trial_environment"),node.code,node.rung,
+                         node.parent.checkpoint.get("sha256") if node.rung and node.parent.checkpoint else None])
+        output=ctx.executor.run_dir(node.id)/"out"
+        stored=ledger.get(node.id,"execution",sig) if ledger else None
+        if (
+            stored
+            and (not ctx.task_spec or (stored["result"].get("artifact_verification") or {}).get("passed"))
+            and (not node.rung or (stored["result"].get("continuation_verification") or {}).get("passed"))
+            and all((output/name).is_file() and digest(output/name)==sha for name,sha in stored["files"].items())
+        ):
+            res=ExecResult(**stored["result"])
+            node.continuation_verification = res.continuation_verification
+            node.artifact_verification = res.artifact_verification
+            node.smoke, node.exec_seconds, node.output = res.smoke,res.exec_seconds,res.output
+            node.checkpoint, _ = self._read_checkpoint(
+                node, fingerprint([ctx.flags.get("trial_environment"), node.code])
+            )
+            from .training import progress_available
+            if node.checkpoint:
+                if not progress_available(node.checkpoint):
+                    node.checkpoint["can_continue"]=False
+                    node.checkpoint["continuation_blocker"]="missing optimizer/model progress"
+                if res.artifact_verification:
+                    node.checkpoint["delivery_seconds"]=max(node.checkpoint["delivery_seconds"],1.2*res.artifact_verification["seconds"])
+            return res
+        res=self._run(node)
+        if ledger and not res.error_type and res.exit_code==0 and (output/"predictions.csv").is_file():
+            files={str(p.relative_to(output)):digest(p) for p in output.rglob("*") if p.is_file()}
+            ledger.put(node.id,"execution",sig,{"files":files,"result":asdict(res)})
+        return res
+
+    def _read_checkpoint(self, node: Node, signature: str) -> tuple[dict | None, str | None]:
+        from .training import checkpoint
+
+        try:
+            return checkpoint(self.ctx.executor.run_dir(node.id) / "checkpoints", signature), None
+        except (OSError, ValueError) as exc:
+            log.warning("node %s has an unusable checkpoint: %s", node.id, exc)
+            return None, str(exc)
 
     def _run(self, node: Node) -> ExecResult:
         ctx = self.ctx
         limit = ctx.current_run_limit()
-        if limit < MIN_SCRIPT_SECONDS:
+        if limit < (2 if getattr(ctx.control,"name",None)=="adaptive" else MIN_SCRIPT_SECONDS):
             raise Discarded()
         ex = ctx.cfg["execution"]
         smoke = float(ex["smoke_timeout_seconds"]) if ex["smoke_run"] else None
-        res = ctx.executor.run(node.id, node.code, limit, abort=ctx.hard_event if ctx.stop_reason == "interrupted" else None,
-                               smoke_timeout=smoke)
+        from .llm.ledger import fingerprint
+        from .training import progress_available, verify_continuation
+        sig=fingerprint([ctx.flags.get("trial_environment"),node.code])
+        env={"SUPERAGENT_FEATURE_DIR":str(ctx.paths.root/"feature_cache"),
+             "SUPERAGENT_FEATURE_NAMESPACE":ctx.flags.get("trial_environment",sig),
+             "SUPERAGENT_TRIAL_SIGNATURE":sig, "SUPERAGENT_RUNG":str(node.rung),
+             "SUPERAGENT_CHECKPOINT_DIR":str(ctx.executor.run_dir(node.id)/"checkpoints"),
+             "SUPERAGENT_DELIVERY_SECONDS":str(min(limit*.5, max(10.0, min(limit*.25, 180.0))))}
+        node.trial_id=node.trial_id or node.id
+        if node.rung:
+            previous=ctx.executor.run_dir(node.parent.id)/"checkpoints"
+            record, _ = self._read_checkpoint(node.parent, sig)
+            if not record or not record["can_continue"] or not progress_available(record):
+                with ctx.tree.lock:
+                    if node.parent.checkpoint:
+                        node.parent.checkpoint["can_continue"] = False
+                raise Discarded()
+            env.update(SUPERAGENT_RESUME_DIR=str(previous),SUPERAGENT_DELIVERY_SECONDS=str(max(record["delivery_seconds"], (node.parent.checkpoint or {}).get("delivery_seconds",0))))
+            smoke=None
+        formal = ctx.flags.get("formal")
+        res = ctx.executor.run(node.id, node.code, limit, abort=ctx.stop_event if formal else ctx.hard_event if ctx.stop_reason == "interrupted" else None,
+                               smoke_timeout=smoke,trial_env=env,
+                               inference_inputs=ctx.task_spec.inference_inputs if ctx.task_spec and not formal else None,
+                               probability=ctx.task_spec.probability if ctx.task_spec else False)
+        if not res.error_type:
+            node.checkpoint, checkpoint_error = self._read_checkpoint(node, sig)
+            if node.rung:
+                try:
+                    if checkpoint_error:
+                        raise ValueError(checkpoint_error)
+                    res.continuation_verification=verify_continuation(record,node.checkpoint)
+                except ValueError as exc:
+                    res.continuation_verification={"passed":False,"error":str(exc)}
+                    res.error_type,res.error_message="ContinuationError",str(exc)
+                    res.output += "\n[continuation verifier] " + str(exc)
+                    with ctx.tree.lock:
+                        if node.parent.checkpoint:
+                            node.parent.checkpoint["can_continue"]=False
+            if node.checkpoint and not progress_available(node.checkpoint):
+                node.checkpoint["can_continue"]=False
+                node.checkpoint["continuation_blocker"]="missing optimizer/model progress"
+            if node.checkpoint and res.artifact_verification:
+                node.checkpoint["delivery_seconds"] = max(node.checkpoint["delivery_seconds"],1.2*res.artifact_verification["seconds"])
+        node.continuation_verification = res.continuation_verification
+        node.artifact_verification = res.artifact_verification
         node.smoke = res.smoke
         if ctx.flags.get("finalizing") or (ctx.stop_reason == "interrupted" and res.error_message and "cancelled" in res.error_message):
             raise Discarded()
@@ -508,6 +777,11 @@ class SearchController:
                 if not parent.repair_succeeded:
                     ctx.add_event("repair_succeeded", node.id, f"repaired node {parent.id}")
                 parent.repair_succeeded = True
+            if node.ok:
+                if parent.ok and parent.score is not None:
+                    node.parent_gain=tree.direction.gain(node.score,parent.score)
+                if tree.best and tree.best.score is not None:
+                    node.global_gain=tree.direction.gain(node.score,tree.best.score)
             outcome = chain_control(tree, node, scfg, ctx.progress(), ctx.rng)  # type: ignore[arg-type]
             tree.append(node)
             if str(scfg["search"]["reward_mode"]) == "per_step":
@@ -523,6 +797,9 @@ class SearchController:
             "returned_to_root": outcome.returned_to_root,
             "reward": outcome.reward,
         }
+        ledger=getattr(ctx.gateway,"ledger",None)
+        if ledger:
+            ledger.state(node.id,"evaluated")
         self._persist(node)
         self._write_decision(rec)
         self._record_timing(rec, node)
@@ -580,6 +857,14 @@ class SearchController:
         tree = self.ctx.tree
         if rec is not None:
             rec.details["discarded"] = True
+            stop = next((reason for reason in ("generation_cutoff", "late_after_generation")
+                         if rec.details.get(reason)), None)
+            if stop or self.ctx.flags.get("finalizing") or self.ctx.hard_event.is_set():
+                with tree.lock:
+                    self.ctx.flags.setdefault("unfinished_steps",[]).append({"id":node.id if node else None,"parent":parent.id,"action":rec.action,"reason":stop or "cutoff"})
+            ledger = getattr(self.ctx.gateway, "ledger", None)
+            if node and ledger and not rec.details.get("review_deferred"):
+                ledger.state(node.id, "discarded")
             try:
                 self._write_decision(rec)
             except Exception:  # noqa: BLE001

@@ -25,6 +25,28 @@ def test_partial_override_merges(tmp_path):
     assert cfg["search"]["initial_drafts"] == 3
 
 
+@pytest.mark.parametrize(
+    "preset",
+    [None, *[p for p in sorted((Path(__file__).resolve().parents[1] / "configs").glob("*.yaml")) if p.name != "amr_link.yaml"]],
+)
+def test_shipped_provider_routes(preset):
+    cfg = build_config(preset, environ={})
+    llm = cfg["llm"]
+    assert (llm["base_url"], llm["api_key_env"]) == ("https://api.deepseek.com", "DEEPSEEK_API_KEY")
+    assert llm["generation"]["model"] == llm["judgement"]["model"] == "deepseek-flash"
+    vector = cfg["experience"]["vector"]
+    assert cfg["experience"]["enabled"] and vector["enabled"]
+    assert (vector["backend"], vector["model"]) == ("local", "Qwen/Qwen3-Embedding-0.6B")
+
+
+def test_amr_link_preset():
+    cfg = build_config(Path(__file__).resolve().parents[1] / "configs" / "amr_link.yaml", environ={})
+    llm = cfg["llm"]
+    assert llm["base_url"] == "https://amr-link.open-design.ai/v1"
+    assert llm["api_key_env"] == "DEEPSEEK_AMR_API_KEY"
+    assert llm["generation"]["model"] == llm["judgement"]["model"] == "deepseek-v4.1-flash"
+
+
 def test_unknown_key(tmp_path):
     with pytest.raises(ConfigError, match="search.no_such_key"):
         build_config(write(tmp_path, {"search": {"no_such_key": 1}}), environ={})
@@ -77,4 +99,5 @@ def test_embedding_backend_enum(tmp_path):
     with pytest.raises(ConfigError):
         build_config(f, environ={})
     f.write_text("experience:\n  vector:\n    backend: api\n")
-    assert build_config(f, environ={})["experience"]["vector"]["backend"] == "api"
+    with pytest.raises(ConfigError, match="experience.vector.backend"):
+        build_config(f, environ={})

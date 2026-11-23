@@ -35,9 +35,11 @@ MIN_TXT_FILES_FOR_TEXT = 20
 ID_SHORT_STRING_MAX_CHARS = 40
 PATH_COLUMN_MAJORITY = 0.5
 MAX_FILE_NAMES_INDEXED = 500_000
+TREE_LINE_COUNT_MAX_BYTES = 50 * 1024 * 1024
 
 IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp"})
 TABLE_EXTS = frozenset({".csv", ".tsv"})
+TFRECORD_EXTS = frozenset({".tfrec", ".tfrecord", ".tfrecords"})
 CODE_EXTS = frozenset({".py", ".ipynb", ".js", ".ts", ".sh", ".r", ".java", ".c", ".cpp", ".h", ".go", ".rs", ".m"})
 COMMON_FILE_EXTS = IMAGE_EXTS | frozenset({
     ".txt", ".wav", ".mp3", ".flac", ".npy", ".npz", ".json", ".csv", ".pdf", ".mp4", ".avi", ".dcm", ".nii", ".gz", ".pt", ".pkl", ".html", ".xml",
@@ -111,9 +113,10 @@ def build_tree(root: Path) -> tuple[str, list[Path]]:
 
     def size_label(p: Path) -> str:
         try:
-            if _is_text_file(p):
+            sz = p.stat().st_size
+            if sz <= TREE_LINE_COUNT_MAX_BYTES and _is_text_file(p):
                 return f"{_count_lines(p)} lines"
-            return human_bytes(p.stat().st_size)
+            return human_bytes(sz)
         except OSError:
             return "unreadable"
 
@@ -268,6 +271,30 @@ def preview_text(path: Path) -> str | None:
     return f"(first {HEAD_LINES} of {len(lines)} lines)\n{head}"
 
 
+def preview_tfrecord(path: Path) -> str:
+    from google.protobuf.message import DecodeError
+
+    from .contract import image_features, records
+
+    try:
+        features = next(records(path), {})
+    except (OSError, ValueError, DecodeError) as exc:
+        return f"TFRecord preview unavailable: {exc}"
+    images = set(image_features(features))
+    fields = []
+    kinds = {"bytes_list": "bytes", "float_list": "float32", "int64_list": "int64"}
+    for name in sorted(features)[:BRIEF_MAX_COLUMNS]:
+        feature = features[name]
+        kind = kinds.get(feature.WhichOneof("kind"), "unset")
+        if name in images:
+            encoding = "JPEG" if feature.bytes_list.value[0].startswith(b"\xff\xd8\xff") else "PNG"
+            kind += f" ({encoding})"
+        fields.append(f"{name}: {kind}")
+    if len(features) > BRIEF_MAX_COLUMNS:
+        fields.append(f"({len(features) - BRIEF_MAX_COLUMNS} more features)")
+    return "TFRecord first Example features: " + (", ".join(fields) or "(none)")
+
+
 def file_preview(path: Path, detailed: bool) -> str | None:
     ext = path.suffix.lower()
     if ext in TABLE_EXTS:
@@ -286,6 +313,8 @@ def file_preview(path: Path, detailed: bool) -> str | None:
         return text
     if ext in {".json", ".jsonl"}:
         return preview_json(path)
+    if ext in TFRECORD_EXTS:
+        return preview_tfrecord(path)
     if ext in IMAGE_EXTS:
         return None
     if _is_text_file(path):
@@ -296,7 +325,12 @@ def file_preview(path: Path, detailed: bool) -> str | None:
 def build_preview(root: Path, detailed: bool) -> str:
     tree, shown = build_tree(root)
     parts = ["## Directory tree", tree, "", "## File previews"]
+    record_dirs = set()
     for f in shown:
+        if f.suffix.lower() in TFRECORD_EXTS:
+            if f.parent in record_dirs:
+                continue
+            record_dirs.add(f.parent)
         prev = file_preview(f, detailed)
         if prev is None:
             continue
@@ -370,6 +404,13 @@ def detect_modalities(root: Path, cfg: Mapping[str, Any]) -> list[str]:
         ext = p.suffix.lower()
         if len(file_names) < MAX_FILE_NAMES_INDEXED:
             file_names.add(p.name)
+        if ext in TFRECORD_EXTS and n_images < min_images:
+            try:
+                from .contract import records, image_features
+                if image_features(next(records(p), {})):
+                    n_images = min_images
+            except Exception:  # noqa: BLE001
+                pass
         if ext in IMAGE_EXTS:
             n_images += 1
         elif ext == ".txt":

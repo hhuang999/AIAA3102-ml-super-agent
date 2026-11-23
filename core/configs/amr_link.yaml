@@ -1,0 +1,14 @@
+# Backup gateway preset for amr-link.open-design.ai (requires DEEPSEEK_AMR_API_KEY).
+llm:
+  base_url: "https://amr-link.open-design.ai/v1"
+  api_key_env: "DEEPSEEK_AMR_API_KEY"
+  generation:
+    model: "deepseek-v4.1-flash"
+    input_price_per_million: 1.0
+    cached_input_price_per_million: 0.02
+    output_price_per_million: 4.0
+  judgement:
+    model: "deepseek-v4.1-flash"
+    input_price_per_million: 1.0
+    cached_input_price_per_million: 0.02
+    output_price_per_million: 4.0

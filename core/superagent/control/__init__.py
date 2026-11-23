@@ -15,7 +15,9 @@ from .state import GpuInfo, RunState, StepTiming, build_state
 if TYPE_CHECKING:  # pragma: no cover
     from ..context import RunContext
 
-BUILTIN = {"static": Controller, "rules": RuleController}
+from .adaptive import AdaptiveController
+
+BUILTIN = {"static": Controller, "rules": RuleController, "adaptive": AdaptiveController}
 
 
 def load_controller_class(spec: str) -> type[Controller]:

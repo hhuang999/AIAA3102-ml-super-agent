@@ -137,7 +137,7 @@ def test_cost_cap_rule():
 
 
 def test_cost_cap_observe_and_enforce(tmp_path):
-    ctx = _ctx(tmp_path, control__cost_cap__limit=0.001)
+    ctx = _ctx(tmp_path, control__cost_cap__limit=0.001, control__cost_cap__mode="observe")
     ctx.gateway = type("G", (), {"totals": {"cost": 0.01, "prompt_tokens": 1, "completion_tokens": 1}})()
     rc = RuleController(ctx)
     d = rc.should_finish(build_state(ctx))
@@ -215,22 +215,13 @@ def test_example_controller(tmp_path, monkeypatch):
 
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "examples" / "controllers"))
     cls = load_controller_class("budget_controller:BudgetController")
-    ctx = _ctx(tmp_path, control__cost_cap__limit=1.0)
+    ctx = _ctx(tmp_path, control__cost_cap__limit=1.0, control__cost_cap__mode="observe")
     ctx.gateway = type("G", (), {"totals": {"cost": 0.95, "prompt_tokens": 1, "completion_tokens": 1}})()
     c = cls(ctx)
     st = build_state(ctx)
     assert c.should_finish(st).reason == "cost_share_reached"
     assert c.step_limits(st).run_limit_secs <= 0.25 * st.usable_secs + 0.1
     sys.modules.pop("budget_controller", None)
-
-
-def test_aihubmix_preset_is_valid():
-    from pathlib import Path
-
-    from superagent.config import build_config
-
-    c = build_config(Path(__file__).resolve().parents[1] / "configs" / "aihubmix.yaml")
-    assert c["llm"]["api_key_env"] == "AIHUBMIX_API_KEY" and c["experience"]["vector"]["backend"] == "api"
 
 
 class BrokenController(Controller):
@@ -255,3 +246,150 @@ def test_broken_controller_falls_back_to_fixed_rules(tmp_path):
     assert ctx.current_run_limit() == pytest.approx(min(7200, 28800 - 300), abs=2)
     assert ctx.search_cfg() is ctx.cfg
     assert SearchController(ctx)._may_start() == ctx.can_start_task()
+
+
+def test_default_resources_and_cost_warning_config():
+    from pathlib import Path
+    from superagent.config import build_config, load_defaults
+
+    d = load_defaults()
+    assert d["resources"]["num_gpus"] == 4
+    assert d["resources"]["parallel"] == 4
+    assert d["resources"]["num_cpus"] == 16
+    cap = d["control"]["cost_cap"]
+    assert cap["mode"] == "enforce"
+    assert cap["limit"] == 20.0
+    assert cap["warn_fraction"] == 0.9
+    assert cap["stop_on_warning"] is True
+    for p in sorted((Path(__file__).resolve().parents[1] / "configs").glob("*.yaml")):
+        build_config(p, environ={})
+
+
+def test_cost_cap_stop_on_warning_at_18():
+    rule = CostCapRule({"mode": "enforce", "limit": 20.0, "currency": "CNY", "rate_to_cap_currency": 1.0,
+                        "warn_fraction": 0.9, "stop_on_warning": True})
+
+    class S:
+        def __init__(self, cost, nodes, active):
+            self.cost, self.nodes_total, self.active_tasks = cost, nodes, active
+
+    d_under = rule.evaluate(S(17.5, 10, 1))
+    assert not d_under.allow and d_under.reason == "within_limit"
+    d_warn = rule.evaluate(S(18.0, 20, 1))
+    assert d_warn.allow and d_warn.reason == "cost_warning"
+    assert d_warn.details["warn_limit"] == 18.0
+    d_warn2 = rule.evaluate(S(19.5, 10, 1))
+    assert d_warn2.allow and d_warn2.reason == "cost_warning"
+    d_proj = rule.evaluate(S(17.5, 4, 1))
+    assert d_proj.allow and d_proj.reason == "cost_limit"
+    d_hard = rule.evaluate(S(20.0, 10, 1))
+    assert d_hard.allow and d_hard.reason == "cost_limit"
+
+
+def test_adaptive_controller_stops_new_branches_at_18(tmp_path):
+    from superagent.control.adaptive import AdaptiveController
+
+    ctx = _ctx(tmp_path)
+    ctx.gateway = type("G", (), {"totals": {"cost": 18.1, "prompt_tokens": 100, "completion_tokens": 100}})()
+    ctrl = AdaptiveController(ctx)
+    st = build_state(ctx)
+    d = ctrl.should_finish(st)
+    assert d.allow and d.reason == "cost_warning"
+
+    choice, info = ctrl.choose(st, reserve=False)
+    assert choice is None and info["reason"] == "cost_warning"
+    rows = [json.loads(line) for line in ctx.paths.control_log.read_text().splitlines()]
+    assert [r["event"] for r in rows] == ["cost_warning"]
+    assert rows[0]["finished"] is True and rows[0]["warn_limit"] == 18.0
+    assert "cost_warning" in ctrl.summary()["cost_cap"]["events"]
+
+    ctrl.leases.add(("root", "draft"))
+    choice2, info2 = ctrl.choose(st, reserve=False)
+    assert choice2 is None and info2["reason"] == "cost_warning"
+
+
+def test_search_controller_winds_down_on_cost_warning(tmp_path, monkeypatch):
+    from superagent.control.adaptive import AdaptiveController
+    from superagent.executor import ExecResult
+    from superagent.operators import GenOutcome
+    from superagent.search import SearchController
+    from superagent.tree import Node
+
+    ctx = _ctx(
+        tmp_path,
+        resources__parallel=2,
+        resources__num_cpus=2,
+        search__initial_drafts=1,
+        search__concurrent_initial_drafts=False,
+        execution__draft_launch_stagger_seconds=0,
+        run__max_steps=10,
+    )
+    gw = type("G", (), {"totals": {"cost": 5.0, "prompt_tokens": 10, "completion_tokens": 10}})()
+    ctx.gateway = gw
+    ctx.control = AdaptiveController(ctx)
+    sc = SearchController(ctx)
+
+    generated = []
+
+    def fake_generate(action, parent, **_kw):
+        node = Node(id=f"n{len(generated) + 1}", kind=action, code="print('VALIDATION_SCORE: 0.8')", plan="p")
+        generated.append(node.id)
+        gw.totals["cost"] = 18.2
+        return GenOutcome(node=node, kind=action, details={})
+
+    def fake_exec(node_id, code, limit, **_kw):
+        return ExecResult("VALIDATION_SCORE: 0.8\n", 0.05, None, None, False, 0, limit)
+
+    def fake_assess(_ctx, node, _res):
+        node.failed = False
+        node.score = 0.8
+        return {}
+
+    monkeypatch.setattr(sc.ops, "generate", fake_generate)
+    monkeypatch.setattr(sc, "_prerun", lambda node, rec: None)
+    monkeypatch.setattr(ctx.executor, "run", fake_exec)
+    monkeypatch.setattr("superagent.search.assess", fake_assess)
+
+    sc.run()
+    assert len(generated) == 1
+    assert len(ctx.tree.ok_nodes()) == 1
+    assert sc.stop_reason() == "cost_warning"
+
+
+def test_adaptive_script_timeout_ignores_fast_crashes_and_honors_min_script_floor(tmp_path):
+    from superagent.control.adaptive import AdaptiveController
+
+    ctx = _ctx(tmp_path, run__time_limit_seconds=21600)
+    ctrl = AdaptiveController(ctx)
+    st = build_state(ctx)
+    st = type(st)(
+        **{
+            **st.__dict__,
+            "step_timings": (
+                StepTiming(1, "c1", "draft", False, 10.0, 4.2),
+                StepTiming(2, "ok1", "draft", True, 30.0, 18.0),
+                StepTiming(3, "c2", "refine", False, 12.0, 5.0),
+                StepTiming(4, "ok2", "refine", True, 35.0, 20.0),
+            ),
+        }
+    )
+    _, draft_run = ctrl.estimate("draft", st)
+    assert draft_run == 18.0  # 4.2s crash is excluded from ok_script estimate
+    # Even when expected execution is 20s, hard kill timeout keeps min_script_seconds (300s) headroom
+    assert ctrl.script_timeout(20.0, st) >= 300.0
+
+
+def test_adaptive_script_timeout_scales_dynamically_with_run_budget(tmp_path):
+    from superagent.control.adaptive import AdaptiveController
+
+    # Short 100s run -> bounded safely below usable_secs
+    ctx_short = _ctx(tmp_path / "s", run__time_limit_seconds=100, run__finalize_reserve_seconds=20)
+    ctrl_short = AdaptiveController(ctx_short)
+    t_short = ctrl_short.script_timeout(15.0, build_state(ctx_short))
+    assert 35.0 <= t_short <= 80.0
+
+    # Long 6-hour (21600s) run with 4 parallel slots -> generous slot-budget floor (>800s) for heavy multi-fold models
+    ctx_long = _ctx(tmp_path / "l", run__time_limit_seconds=21600, resources__parallel=4)
+    ctrl_long = AdaptiveController(ctx_long)
+    t_long = ctrl_long.script_timeout(30.0, build_state(ctx_long))
+    assert t_long >= 900.0

@@ -29,7 +29,7 @@ def reward_for(n: Node) -> float:
 
 
 def step_reward(n: Node, tree: SearchTree, min_gain: float) -> float:
-    """Reward of one evaluated node: -1 failed, 0.5 first success of its branch, 1 new branch best, 0 otherwise."""
+    """Reward of one evaluated node: -1 failed, 0.5 first success, smooth [0.75, 1.5] new branch best, 0 otherwise."""
     if not n.ok or n.score is None:
         return -1.0
     with tree.lock:
@@ -37,7 +37,11 @@ def step_reward(n: Node, tree: SearchTree, min_gain: float) -> float:
         if not earlier:
             return 0.5
         prev = tree.sorted_ok(earlier)[0]
-        return 1.0 if tree.direction.gain(n.score, prev.score) >= min_gain else 0.0  # type: ignore[arg-type]
+        g = tree.direction.gain(n.score, prev.score)  # type: ignore[arg-type]
+        if g < min_gain:
+            return 0.0
+        rel = g / max(abs(prev.score), 0.05)  # type: ignore[arg-type]
+        return min(1.5, 0.75 + max(0.0, rel))
 
 
 def add_reward(n: Node, value: float) -> None:
@@ -63,8 +67,6 @@ def backpropagate(n: Node, value: float, count_visit: bool) -> None:
                 parent.keep_going = x.keep_going
         if x.kind in ("draft", "synthesis") and x.in_progress:
             x.in_progress = False
-        if x.no_gain_count > 0:
-            x.no_gain_count = 0
         if count_visit:
             x.visits += 1
             x.reward_sum += value
@@ -117,6 +119,7 @@ def chain_control(
         # Part two: the normal decision.
         cb = n.chain_best
         parent = n.parent
+        prev_no_gain = parent.no_gain_count if parent is not None else (cb.no_gain_count if cb is not None else 0)
         s_score = n.score
         must_return = False
         ended_no_gain = False
@@ -132,19 +135,21 @@ def chain_control(
             if s_score is not None and cb_score is not None:
                 g = d.gain(s_score, cb_score)
                 if g < float(s["min_gain"]):
-                    assert cb is not None
-                    if cb.no_gain_count < int(s["max_no_gain"]):
-                        cb.no_gain_count += 1
+                    if prev_no_gain < int(s["max_no_gain"]):
+                        n.no_gain_count = prev_no_gain + 1
                         n.keep_going = True
                     else:
+                        n.no_gain_count = prev_no_gain + 1
                         n.keep_going = False
                         n.dead_end = True
                         must_return = True
                         ended_no_gain = True
                 else:
+                    n.no_gain_count = 0
                     n.chain_best = n
                     n.keep_going = True
             elif s_score is not None:
+                n.no_gain_count = 0
                 n.chain_best = n
                 n.keep_going = True
             else:
@@ -152,6 +157,7 @@ def chain_control(
         elif n.failed is None:
             must_return = True
         else:
+            n.no_gain_count = prev_no_gain
             depth = n.repair_depth
             if depth >= int(s["repair_return_depth"]):
                 must_return = True

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from .codegen import CodeGenerator, Extracted
 from .context import RunContext
-from .errors import StructuredOutputError
+from .errors import StructuredOutputError, LLMUnavailableError
+from .llm.ledger import fingerprint, PermanentCall
 from .planner import render_plan, structured_plan
 from .prompts import blocks, builders
 from .scheduling import synthesis_representatives
@@ -37,11 +39,31 @@ class Operators:
         self.codegen = CodeGenerator(ctx.gateway, int(cg["extract_max_attempts"]), int(cg["patch_max_attempts"]))
 
     # ------------------------------------------------------------------ helpers
+    def _include_torch(self) -> bool:
+        if self.ctx.resources().num_gpus > 0:
+            return True
+        facts = getattr(self.ctx, "flags", {}).get("task_facts") or {}
+        modalities = {str(m).lower() for m in (facts.get("modalities") or getattr(self.ctx, "modalities", ()) or ())}
+        return bool(modalities & {"image", "text", "audio", "multimodal"}) or not modalities
+
     def _rules(self) -> str:
         v = self.ctx.cfg["validation_rule"]
-        return blocks.implementation_rules(self.ctx.resources(), int(v["split_seed"]), float(v["validation_fraction"]))
+        return blocks.implementation_rules(
+            self.ctx.resources(),
+            int(v["split_seed"]),
+            float(v["validation_fraction"]),
+            declared_split=self.ctx.task_spec is not None,
+            include_torch=self._include_torch(),
+        )
 
     def _env(self) -> str:
+        if self.ctx.flags.get("formal"):
+            caps = self.ctx.flags["task_facts"]["capabilities"]
+            packages = ", ".join(sorted(caps["dependencies"]))
+            return (
+                f"Available packages: {packages}. Training and inference run offline. "
+                "Use only the declared paths. Embed everything needed for standalone inference in out/model."
+            )
         return blocks.environment_block(self.ctx.mode, self.ctx.rng)  # type: ignore[arg-type]
 
     def _new_node(self, node_id: str, kind: str, parent: Node, plan: str, code: str) -> Node:
@@ -56,8 +78,7 @@ class Operators:
             else:
                 n.chain_best = parent.chain_best
                 n.branch_id = parent.branch_id
-            n.via_elite = parent.picked_by_elite
-            parent.picked_by_elite = False
+            n.via_elite = bool(getattr(ctx._local, "via_elite", False) or parent.picked_by_elite)
             tree.attach(n, parent)
             if kind != "synthesis":
                 parent.pending_children = max(0, parent.pending_children - 1)
@@ -97,6 +118,41 @@ class Operators:
 
     # ------------------------------------------------------------------ entry point
     def generate(self, action: str, parent: Node) -> GenOutcome:
+        ledger = getattr(self.ctx.gateway, "ledger", None)
+        if not ledger:
+            return self._generate(action,parent)
+        sig=fingerprint([action,parent.id,parent.code,self.ctx.task_desc,self.ctx.cfg["llm"]])
+        op=ledger.claim(sig)
+        self.ctx._local.operation_id=op
+        try:
+            ready=ledger.get(op,"candidate",sig)
+            if ready:
+                node=self._new_node(op,ready["kind"],parent,ready["plan"],ready["code"])
+                node.structured_plan=ready["structured_plan"]
+                outcome=GenOutcome(node,ready["kind"],ready["details"],ready["fallback"])
+            else:
+                outcome=self._generate(action,parent)
+                if outcome.node and not outcome.node.is_failed:
+                    node=outcome.node
+                    ledger.put(op,"candidate",sig,dict(kind=outcome.kind,plan=node.plan,code=node.code,
+                               structured_plan=node.structured_plan,details=outcome.details,fallback=outcome.fallback_reason))
+        except PermanentCall:
+            ledger.state(op,"abandoned")
+            raise
+        except LLMUnavailableError as exc:
+            wait=max(0,self.ctx.gateway.cooldown_until-time.monotonic())
+            ledger.state(op,"suspended" if "budget exhausted" not in str(exc) else "abandoned",wait)
+            raise
+        except Exception:
+            ledger.state(op,"failed")
+            raise
+        else:
+            ledger.state(op,"generated")
+            return outcome
+        finally:
+            self.ctx._local.operation_id=None
+
+    def _generate(self, action: str, parent: Node) -> GenOutcome:
         if action == "draft":
             return self.draft(parent)
         if action == "refine":
@@ -111,23 +167,84 @@ class Operators:
             return self.synthesis(parent)
         raise ValueError(f"unknown action {action}")
 
+    def experiment_candidate(self, dispatch, parent, evidence, planned):
+        """Generate a descendant of the selected parent and retain its approved plan."""
+        from .codegen import plan_coverage, planned_patch
+        from .planner import plan_experiment, python_symbols
+
+        proposal = dispatch.proposal
+        targeted = proposal.action == "repair" and proposal.target == "predict_only" and "predict_only" in python_symbols(parent.code)
+        if targeted:
+            plan = {
+                "schema_version": 1, "action": "repair", "evidence_ids": list(proposal.evidence_ids),
+                "hypothesis": "Correct the failing isolated inference path using the allowlisted inputs",
+                "changes": [{"id": "inference", "component": "train_eval", "target": "predict_only",
+                             "edit": "Fix the diagnosed inference failure while using the existing fitted model",
+                             "check": "The same model reproduces both CSVs and rejects corrupt weights"}],
+                "expected_observation": "The independent score is preserved and isolated reload passes",
+                "preserve": ["training", "fitted model", "split", "submission schema"],
+            }
+        else:
+            plan = plan_experiment(self.ctx, dispatch, parent, evidence)
+        planned(plan)
+        rules = self.ctx.task_desc + "\n" + self._rules()
+        if targeted:
+            rules += "\nFailure to repair: " + str((parent.artifact_verification or {}).get("error", ""))[-1500:]
+        extract = None
+        if plan["changes"][0]["target"] != "whole_script":
+            extract = planned_patch(self.ctx.gateway, dispatch.id, dispatch.signature, plan, parent.code, rules,
+                                    role="repair_coder" if targeted else "patch_coder")
+        if extract is None:
+            system = "Write a complete single-model classification script implementing the approved plan."
+            user = (f"{rules}\nPlan: {plan}\nObservations: {evidence}\n"
+                    f"Previous source:\n{parent.code}\nReturn a short method summary and one complete Python code block.")
+            fallback = self.codegen.full_script("script_coder", system, user, dispatch.id)
+            if fallback.extracted and not plan_coverage(plan, parent.code, fallback.extracted.code):
+                extract = fallback.extracted.code
+        node = self._new_node(dispatch.id, proposal.action, parent, plan["hypothesis"], extract or "")
+        node.structured_plan = plan
+        if extract is None:
+            self._codegen_failure(node, "plan_incomplete: not every approved change is present in the candidate")
+            node.summary = "plan_incomplete: not every approved change is present in the candidate"
+        return node
+
     # ------------------------------------------------------------------ draft
     def draft(self, root: Node) -> GenOutcome:
         ctx = self.ctx
-        node_id = new_id()
-        summary = self._summary(root)
-        reqs = builders.draft_requirements(self._rules(), self._env(), ctx.catalog_text)
+        node_id = getattr(self.ctx._local, "operation_id", None) or new_id()
+        baseline = ctx.task_dir/"baseline.py"
+        if ctx.task_spec and baseline.is_file():
+            with ctx.tree.lock:
+                use = not ctx.flags.get("baseline_claimed")
+                ctx.flags["baseline_claimed"]=True
+            if use:
+                node=self._new_node(node_id,"draft",root,"Execute the supplied task baseline.",baseline.read_text(encoding="utf-8"))
+                return GenOutcome(node,"draft",{"codegen":"supplied_baseline"})
+        ledger = ctx.gateway.ledger if ctx.flags.get("formal") else None
+        saved = ledger.get(node_id, "draft_inputs", "v1") if ledger else None
+        if saved:
+            summary, reqs = saved
+        else:
+            summary = self._summary(root)
+            reqs = builders.draft_requirements(self._rules(), self._env(), ctx.catalog_text)
+            hypothesis = getattr(ctx._local, "selected_hypothesis", None)
+            if hypothesis:
+                reqs += "\nThe assigned model hypothesis is: " + hypothesis
+            if ledger:
+                ledger.put(node_id, "draft_inputs", "v1", [summary, reqs])
         details: dict[str, Any] = {"planning": "none"}
         result: Extracted | None = None
         last = ""
         if ctx.cfg["codegen"]["staged_drafting"]:
             details["codegen"] = "staged"
 
+            declared = ctx.task_spec is not None
+
             def build_stage(stage: str, prev: list[tuple[str, str, str]]) -> tuple[str, str]:
-                return builders.draft_stage(ctx.task_desc, ctx.data_preview, summary, reqs, stage, prev, ctx.mode)
+                return builders.draft_stage(ctx.task_desc, ctx.data_preview, summary, reqs, stage, prev, ctx.mode, declared_split=declared)
 
             def build_int(steps: list[tuple[str, str, str]]) -> tuple[str, str]:
-                return builders.draft_integrator(ctx.task_desc, ctx.data_preview, summary, reqs, steps)
+                return builders.draft_integrator(ctx.task_desc, ctx.data_preview, summary, reqs, steps, declared_split=declared)
 
             result, _plan = self.codegen.staged(build_stage, build_int, node_id)
             if result is None:
@@ -140,6 +257,8 @@ class Operators:
         node = self._new_node(node_id, "draft", root, result.plan if result else "", result.code if result else "")
         if result is None:
             self._codegen_failure(node, last)
+            if ledger:
+                node.summary = r.failure_reason or node.summary
         return GenOutcome(node, "draft", details)
 
     # ------------------------------------------------------------------ planning + patching shared by refine-like ops
@@ -147,12 +266,21 @@ class Operators:
         """Returns (plan text, code, structured plan, last reply). Empty code means codegen failure."""
         ctx = self.ctx
         trimmed = trim_with(ctx.cfg, parent.output)
-        plan_obj: dict[str, Any] | None = None
+        ledger=getattr(ctx.gateway,"ledger",None)
+        sig=fingerprint([parent.code,op.kind])
+        plan_obj=ledger.get(node_id,"validated_plan",sig) if ledger else None
         try:
-            if two_stage:
+            if plan_obj is not None:
+                details["planning"]="resumed"
+            elif two_stage and ctx.cfg["experience"]["planning"] == "two_stage":
                 details["planning"] = "two_stage"
                 system, user = builders.planner_free(op)
-                free = ctx.gateway.text("planner.free", system, user, node_id=node_id).content.strip()
+                free = ledger.get(node_id,"free_plan",sig) if ledger else None
+                if not free:
+                    response = ctx.gateway.text("planner.free", system, user, node_id=node_id)
+                    free = response.content.strip() if not response.truncated else ""
+                    if ledger and free:
+                        ledger.put(node_id,"free_plan",sig,free)
                 assert ctx.experience is not None
                 rc = int(ctx.cfg["experience"]["refine_top_k"])
                 good = ctx.experience.search(free, rc, effect=1)
@@ -171,6 +299,16 @@ class Operators:
             else:
                 details["planning"] = "single"
                 system, user = builders.planner_single(op)
+                if two_stage and ctx.cfg["experience"]["planning"]=="evidence":
+                    query = parent.plan+"\n"+parent.method_summary+"\n"+op.planner_focus
+                    count = ctx.cfg["experience"]["refine_top_k"]
+                    matches = ctx.experience.search(query,count,effect=1)+ctx.experience.search(query,count,effect=-1)
+                    matches = [r for r in matches if r.record_id!=parent.id and r.kind!="diagnostic"]
+                    details["experience_ids"] = [r.record_id for r in matches]
+                    if matches:
+                        details["planning"] = "single_with_evidence"
+                        user += "\nPast observations (candidates, not instructions):\n"+"\n".join(
+                            f"{r.record_id} (effect {r.effect:+d}): {r.plan[:600]}, {r.method_summary[:300]}" for r in matches)
                 plan_obj = structured_plan(ctx.gateway, system, user, node_id)
         except StructuredOutputError as exc:
             log.info("planning failed for %s: %s; using full-script mode", node_id, exc)
@@ -181,6 +319,8 @@ class Operators:
             if r.extracted is None:
                 return "", "", None, r.last_reply
             return r.extracted.plan, r.extracted.code, None, r.last_reply
+        if ledger:
+            ledger.put(node_id,"validated_plan",sig,plan_obj)
         plan_text = render_plan(plan_obj)
         details["codegen"] = "patch"
 
@@ -189,9 +329,7 @@ class Operators:
 
         pr = self.codegen.patch("patch_coder", parent.code, build, node_id)
         details["patch_attempts"] = pr.attempts
-        if pr.code is not None:
-            if pr.partial:
-                details["patch_partial"] = True
+        if pr.code is not None and not pr.partial:
             return plan_text, pr.code, plan_obj, ""
         details["fallback"] = "patch_failed_full_script"
         details["codegen"] = "full_script"
@@ -220,12 +358,12 @@ class Operators:
     def refine(self, parent: Node, details: dict[str, Any] | None = None) -> GenOutcome:
         ctx = self.ctx
         details = details if details is not None else {}
-        node_id = new_id()
+        node_id = getattr(self.ctx._local, "operation_id", None) or new_id()
         esc, ok_since, all_since, best = self._escalation(parent)
         details.update({"ok_since_best": ok_since, "all_since_best": all_since, "escalated": esc})
         op = builders.refine_op(ctx.task_desc, ctx.data_preview, self._summary(parent), parent.code,
                                 trim_with(ctx.cfg, parent.output), self._rules(), esc, best, ok_since, all_since)
-        two_stage = bool(ctx.experience is not None and ctx.cfg["experience"]["enabled"] and len(ctx.experience) > 0)
+        two_stage = bool(esc and ctx.experience is not None and ctx.cfg["experience"]["enabled"] and len(ctx.experience) > 0)
         node = self._finish_improve("refine", parent, node_id, op, two_stage, details)
         return GenOutcome(node, "refine", details)
 
@@ -240,7 +378,7 @@ class Operators:
             out = self.refine(parent, {"requested": "retrospect"})
             out.fallback_reason = "fallback_to_refine"
             return out
-        node_id = new_id()
+        node_id = getattr(self.ctx._local, "operation_id", None) or new_id()
         esc, ok_since, all_since, best = self._escalation(parent)
         details: dict[str, Any] = {"ok_since_best": ok_since, "all_since_best": all_since, "escalated": esc, "trajectory_steps": len(steps)}
         op = builders.retrospect_op(ctx.task_desc, ctx.data_preview, self._summary(parent), parent.code,
@@ -272,7 +410,7 @@ class Operators:
             out = self.refine(parent, {"requested": "borrow"})
             out.fallback_reason = "fallback_to_refine"
             return out
-        node_id = new_id()
+        node_id = getattr(self.ctx._local, "operation_id", None) or new_id()
         with ctx.tree.lock:
             if len(refs) == 1:
                 ref_text = node_card(refs[0], ctx.direction, with_code=True)
@@ -288,7 +426,7 @@ class Operators:
     # ------------------------------------------------------------------ repair
     def repair(self, parent: Node) -> GenOutcome:
         ctx = self.ctx
-        node_id = new_id()
+        node_id = getattr(self.ctx._local, "operation_id", None) or new_id()
         details: dict[str, Any] = {"planning": "none"}
         rules = self._rules()
         if parent.error_type == "CodegenError" or not parent.code.strip():
@@ -321,7 +459,7 @@ class Operators:
 
             pr = self.codegen.patch("repair_coder", parent.code, build, node_id)
             details["patch_attempts"] = pr.attempts
-            if pr.code is not None:
+            if pr.code is not None and not pr.partial:
                 code = pr.code
                 plan = pr.first_explanation or f"Fix the {parent.error_type or 'failure'}: {parent.summary}".strip()
                 if pr.partial:
@@ -349,7 +487,7 @@ class Operators:
             with ctx.tree.lock:
                 ctx.tree.synthesis_count = max(0, ctx.tree.synthesis_count - 1)
             return GenOutcome(None, "synthesis", {"reason": "fewer than two representatives"})
-        node_id = new_id()
+        node_id = getattr(self.ctx._local, "operation_id", None) or new_id()
         with ctx.tree.lock:
             text = "\n\n".join(f"## Branch {r.branch_id} (score {r.score:.4f})\n{node_card(r, ctx.direction)}" for r in reps)
         system, user = builders.synthesis_prompt(ctx.task_desc, ctx.data_preview, text, self._rules())

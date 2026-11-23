@@ -68,6 +68,25 @@ def test_api_key_from_env_file(tmp_path, monkeypatch):
     assert "num_cpus" in json.loads((out / "status.json").read_text())["error"]
 
 
+def test_dotenv_endpoint_applies_before_yaml_and_os_environment_wins(tmp_path, monkeypatch):
+    import yaml
+
+    monkeypatch.delenv("SUPERAGENT_LLM_BASE_URL", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fixture")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("SUPERAGENT_LLM_BASE_URL=http://localhost:1234\n")
+    config = tmp_path / "config.yaml"
+    config.write_text("llm:\n  base_url: https://fixture.invalid\n")
+    t = task(tmp_path)
+    (t / "task.yaml").write_text("version: -1\n")  # Stop before any HTTP is attempted.
+    for i, expected in enumerate(("http://localhost:1234", "http://localhost:5678")):
+        if i:
+            monkeypatch.setenv("SUPERAGENT_LLM_BASE_URL", expected)
+        out = tmp_path / f"out{i}"
+        assert main(["--task-dir", str(t), "--output-dir", str(out), "--config", str(config)]) == 3
+        assert yaml.safe_load((out / "logs/config_used.yaml").read_text())["llm"]["base_url"] == expected
+
+
 @pytest.mark.llm
 def test_cli_direction_skips_judge(tmp_path):
     """Real endpoint: the time limit is too short to start any script, so only the description is cleaned."""
@@ -87,14 +106,3 @@ def test_policy_scan():
     code = "import timm\nm = timm.create_model('resnet18', pretrained=True)\n# m = AutoModel.from_pretrained('x')\n"
     hits = policy_scan(code, ["pretrained=True", "from_pretrained("])
     assert [h[0] for h in hits] == [2]
-
-
-def test_api_embedding_backend_needs_its_key(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "dummy")
-    monkeypatch.delenv("AIHUBMIX_API_KEY", raising=False)
-    monkeypatch.chdir(tmp_path)
-    cfg = tmp_path / "c.yaml"
-    cfg.write_text("experience:\n  vector:\n    backend: api\n")
-    out = tmp_path / "out"
-    assert main(["--task-dir", str(task(tmp_path)), "--output-dir", str(out), "--config", str(cfg)]) == 3
-    assert "AIHUBMIX_API_KEY" in json.loads((out / "status.json").read_text())["error"]

@@ -9,7 +9,7 @@ from typing import Any
 
 from .utils import new_id, now_iso
 
-NODE_KINDS = ("root", "draft", "refine", "repair", "retrospect", "borrow", "synthesis")
+NODE_KINDS = ("root", "draft", "refine", "repair", "retrospect", "borrow", "synthesis","promote")
 
 
 @dataclass(eq=False)
@@ -47,6 +47,14 @@ class Node:
     picked_by_elite: bool = False
     has_artifacts: bool = False
     val_files_ok: bool | None = None
+    parent_gain: float | None = None
+    global_gain: float | None = None
+    complementarity: float | None = None
+    trial_id: str | None = None
+    rung: int = 0
+    checkpoint: dict | None = None
+    artifact_verification: dict | None = None
+    continuation_verification: dict | None = None
     smoke: str | None = None
     created_at: str = field(default_factory=now_iso)
     finished_at: str | None = None

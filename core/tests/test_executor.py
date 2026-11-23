@@ -71,6 +71,15 @@ def test_offline_env_visible(tmp_path):
     assert "OFF 1 None" in r.output
 
 
+@pytest.mark.parametrize(("mask", "expected"), [("3,1", ["3", "1"]), ("GPU-abcd", ["GPU-abcd"] * 2), ("", [""] * 2)])
+def test_worker_devices_stay_within_scheduler_mask(tmp_path, monkeypatch, mask, expected):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    data = tmp_path / "data"
+    data.mkdir()
+    executor = Executor(tmp_path / "runs", data, 2, 2, 2, {})
+    assert [executor._env(slot)["CUDA_VISIBLE_DEVICES"] for slot in range(2)] == expected
+
+
 def test_cpu_affinity(tmp_path):
     n_avail = len(os.sched_getaffinity(0))
     if n_avail < 2:

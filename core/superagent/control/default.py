@@ -64,7 +64,9 @@ class RuleController(Controller):
         self._plan = self.time_rule.plan(state) if self.time_rule.active else {}
         self.log.write("plan", {"controller": self.name, "rules": self._rules(), "resources": self._resources,
                                 "time_allocation": self._plan,
-                                "cost_cap": {"limit": self.cost_rule.limit, "currency": self.cost_rule.currency,
+                                "cost_cap": {"limit": self.cost_rule.limit, "warn_limit": round(self.cost_rule.warn_limit, 4),
+                                             "stop_on_warning": self.cost_rule.stop_on_warning,
+                                             "currency": self.cost_rule.currency,
                                              "rate_to_cap_currency": self.cost_rule.rate}}, state=state)
 
     def on_step_finished(self, state: RunState, timing: StepTiming) -> None:
@@ -92,7 +94,9 @@ class RuleController(Controller):
             "rules": self._rules(),
             "resources": self._resources,
             "time_allocation": {"plan_at_start": self._plan, "run_limits": lim_stats},
-            "cost_cap": {"limit": self.cost_rule.limit, "currency": self.cost_rule.currency,
+            "cost_cap": {"limit": self.cost_rule.limit, "warn_limit": round(self.cost_rule.warn_limit, 4),
+                         "stop_on_warning": self.cost_rule.stop_on_warning,
+                         "currency": self.cost_rule.currency,
                          "rate_to_cap_currency": self.cost_rule.rate, "events": events, "cost_curve": curve},
         }
 
@@ -138,7 +142,7 @@ class RuleController(Controller):
                      "best_score": state.best_score, "mode": rule.mode, outcome_key: d.allow}
             with self._lock:
                 self._cost_events[d.reason] = event
-            self.log.write("cost_" + ("limit" if d.allow else "warning"), event, state=state)
+            self.log.write(d.reason, event, state=state)
         if d.allow and rule.enforced:
             return d
         return Decision(False, d.reason, d.details)

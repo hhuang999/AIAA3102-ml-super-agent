@@ -15,6 +15,13 @@ class Dispatch:
     action: str                        # draft | refine | repair | retrospect | borrow | synthesis | none
     reason: str
     details: dict[str, Any] = field(default_factory=dict)
+    via_elite: bool = False
+
+
+def _after_best_finished(n: Node, best: Node) -> bool:
+    if n.created_at and best.finished_at:
+        return n.created_at >= best.finished_at
+    return True
 
 
 def attempts_since_branch_best(tree: SearchTree, branch: int) -> int | None:
@@ -23,7 +30,10 @@ def attempts_since_branch_best(tree: SearchTree, branch: int) -> int | None:
         best = tree.branch_best(branch)
         if best is None or best.step is None:
             return None
-        return sum(1 for n in tree.nodes if n.branch_id == branch and n.step is not None and n.step > best.step)
+        return sum(
+            1 for n in tree.nodes
+            if n.branch_id == branch and n.step is not None and n.step > best.step and _after_best_finished(n, best)
+        )
 
 
 def branch_plateau(tree: SearchTree, branch: int, window: int, enabled: bool = True, count_failed: bool = False) -> bool:
@@ -115,13 +125,19 @@ def synthesis_conditions(tree: SearchTree, cfg: Mapping[str, Any], p: float | No
 
 
 def dispatch(
-    tree: SearchTree, node: Node, cfg: Mapping[str, Any], p: float | None, rng: random.Random
+    tree: SearchTree,
+    node: Node,
+    cfg: Mapping[str, Any],
+    p: float | None,
+    rng: random.Random,
+    via_elite: bool | None = None,
 ) -> Dispatch:
     """Choose the operator for ``node``. Reserves capacity under the tree lock:
     a creating action increments ``node.pending_children`` (or ``synthesis_count``)."""
+    elite = bool(node.picked_by_elite if via_elite is None else via_elite)
     with tree.lock:
         if node.dead_end:
-            return Dispatch("none", "dead_end")
+            return Dispatch("none", "dead_end", via_elite=elite)
         if node.is_root:
             if bool(cfg["operators"]["synthesis"]["trigger_on_stagnation"]) and synthesis_conditions(tree, cfg, p):
                 tree.synthesis_count += 1
@@ -135,9 +151,9 @@ def dispatch(
             return Dispatch("none", "root_full_no_synthesis")
         if node.is_failed or node.predictions_ok is False:
             node.pending_children += 1
-            return Dispatch("repair", "node_failed")
+            return Dispatch("repair", "node_failed", via_elite=elite)
         pl = cfg["plateau"]
-        window = int(pl["elite_branch_window"] if node.picked_by_elite else pl["branch_window"])
+        window = int(pl["elite_branch_window"] if elite else pl["branch_window"])
         details: dict[str, Any] = {"plateau_window": window}
         if branch_plateau(tree, node.branch_id or 0, window, bool(pl["enabled"]), bool(pl["count_failed_attempts"])):
             ops = cfg["operators"]
@@ -146,11 +162,11 @@ def dispatch(
             node.pending_children += 1
             if borrow_ok and retro_ok:
                 action = "borrow" if rng.random() < float(ops["borrow"]["probability"]) else "retrospect"
-                return Dispatch(action, "branch_plateau", details)
+                return Dispatch(action, "branch_plateau", details, via_elite=elite)
             if borrow_ok:
-                return Dispatch("borrow", "branch_plateau", details)
+                return Dispatch("borrow", "branch_plateau", details, via_elite=elite)
             if retro_ok:
-                return Dispatch("retrospect", "branch_plateau", details)
-            return Dispatch("refine", "plateau_no_alternative", details)
+                return Dispatch("retrospect", "branch_plateau", details, via_elite=elite)
+            return Dispatch("refine", "plateau_no_alternative", details, via_elite=elite)
         node.pending_children += 1
-        return Dispatch("refine", "branch_progressing", details)
+        return Dispatch("refine", "branch_progressing", details, via_elite=elite)

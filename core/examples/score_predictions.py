@@ -12,10 +12,12 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
 
 def score(pred_path: str, labels_path: str, metric: str) -> float:
-    pred = pd.read_csv(pred_path)
-    truth = pd.read_csv(labels_path)
+    pred = pd.read_csv(pred_path, dtype=str, keep_default_na=False)
+    truth = pd.read_csv(labels_path, dtype=str, keep_default_na=False)
     id_col, label = truth.columns[0], truth.columns[1]
-    merged = truth.merge(pred, on=id_col, suffixes=("_true", "_pred"))
+    if list(pred) != [id_col, label] or set(truth[id_col]) != set(pred[id_col]):
+        raise ValueError("Prediction columns or sample IDs do not match the labels")
+    merged = truth.merge(pred, on=id_col, suffixes=("_true", "_pred"), validate="one_to_one")
     y_true, y_pred = merged[f"{label}_true"], merged[f"{label}_pred"]
     if metric == "accuracy":
         return float(accuracy_score(y_true.astype(str), y_pred.astype(str)))

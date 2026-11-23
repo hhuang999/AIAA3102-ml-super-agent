@@ -106,7 +106,12 @@ def build_state(ctx: "RunContext") -> RunState:
     with ctx.state_lock:
         timings = tuple(ctx.step_timings)
     gw = ctx.gateway
-    totals = getattr(gw, "totals", None) or {}
+    gw_lock = getattr(gw, "_lock", None)
+    if gw_lock is not None:
+        with gw_lock:
+            totals = dict(getattr(gw, "totals", None) or {})
+    else:
+        totals = getattr(gw, "totals", None) or {}
     cost = float(totals.get("cost", 0.0) or 0.0)
     exp = ctx.experience
     embedder = getattr(exp, "embedder", None) if exp is not None else None

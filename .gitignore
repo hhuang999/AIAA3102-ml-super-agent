@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+build/
+dist/
 .pytest_cache/
 .venv/
 cache/
@@ -15,9 +17,18 @@ cache/
 *.joblib
 *.pkl
 
-# Local development documents and credentials
-/docs/superagent_develop_docs/
-/1.group_HPC.txt
-/2.server_hpc.txt
-secrets.env
+# Local course data, runtime outputs and archives
+/evidence/
+/adapter/evidence/
+/adapter/prepared/
+/adapter/outputs/
+/adapter/private/
+/adapter/artifacts/
+/adapter/build/
+/.local-archive/
+/.ruff_cache/
+/outputs/
+/example_tasks/
+/pretrained_cache/
+/usage_board.html
 .review-tmp*/

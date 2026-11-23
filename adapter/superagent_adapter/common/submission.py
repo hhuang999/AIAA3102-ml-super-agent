@@ -8,14 +8,27 @@ import pandas as pd
 
 
 def make_submission(pred_csv: Path, sample_csv: Path, out_csv: Path) -> Path:
-    """Copy a prediction file into the submission format (the sample's columns and column order)."""
-    pred = pd.read_csv(pred_csv)
-    cols = list(pd.read_csv(sample_csv, nrows=1).columns)
+    """Copy a prediction file into the submission format (the sample's columns, aligned IDs and non-empty cells)."""
+    pred = pd.read_csv(pred_csv, dtype=str, keep_default_na=False)
+    sample = pd.read_csv(sample_csv, dtype=str, keep_default_na=False)
+    cols = list(sample.columns)
     missing = [c for c in cols if c not in pred.columns]
     if missing:
         raise ValueError(f"{pred_csv} lacks submission columns {missing}")
+    id_col = cols[0]
+    p_ids = pred[id_col].astype(str).str.strip()
+    s_ids = sample[id_col].astype(str).str.strip()
+    if p_ids.duplicated().any():
+        raise ValueError(f"{pred_csv} contains duplicate sample IDs in {id_col}")
+    if set(p_ids) != set(s_ids) or len(p_ids) != len(s_ids):
+        raise ValueError(f"{pred_csv} ID set does not match {sample_csv}")
+    aligned = pred.set_index(p_ids).loc[s_ids.tolist()].reset_index(drop=True)
+    aligned[id_col] = sample[id_col].values
+    for c in cols[1:]:
+        if (aligned[c].astype(str).str.strip() == "").any():
+            raise ValueError(f"{pred_csv} contains empty prediction cells in column '{c}'")
     out_csv.parent.mkdir(parents=True, exist_ok=True)
-    pred[cols].to_csv(out_csv, index=False)
+    aligned[cols].to_csv(out_csv, index=False)
     return out_csv
 
 

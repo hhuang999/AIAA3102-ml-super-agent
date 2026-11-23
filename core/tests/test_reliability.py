@@ -79,14 +79,16 @@ class _Transport:
 
 def test_empty_truncated_reply_is_retried_with_lower_effort(tmp_path):
     cfg = load_defaults()["llm"]
+    cfg["role_policy"]["patch_coder"].update(thinking="enabled", reasoning_effort="high")
     tr = _Transport([TransportResponse("", "length", 10, 32768, 32768), TransportResponse("code", "stop", 10, 100, 50)])
     gw = LLMGateway(cfg, tmp_path / "calls.jsonl", tr)
     res = gw.text("patch_coder", "s", "u")
     assert res.content == "code"
-    assert [r["reasoning_effort"] for r in tr.requests] == ["high", "low"]
+    assert [r["reasoning_effort"] for r in tr.requests] == ["high", None]
+    assert [r["max_tokens"] for r in tr.requests] == [32768,32768]
     rows = read_jsonl(tmp_path / "calls.jsonl")
-    assert len(rows) == 2 and rows[0]["ok"] is False and "retrying with reasoning effort low" in rows[0]["error"]
-    assert rows[1]["reasoning_effort"] == "low" and rows[1]["ok"]
+    assert len(rows) == 2 and rows[0]["ok"] is False and "retrying with reasoning effort off" in rows[0]["error"]
+    assert not rows[1]["thinking"] and rows[1]["ok"]
 
 
 def test_no_retry_for_judgement_roles_or_when_switched_off(tmp_path):

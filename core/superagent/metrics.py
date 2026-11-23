@@ -261,7 +261,53 @@ class Identification:
     per_metric: dict[str, int] = field(default_factory=dict)
 
 
-def identify_metric(members: Sequence[tuple[ValFiles, float]], higher_is_better: bool, min_members: int = 2) -> Identification:
+PRIMARY_METRICS = frozenset({
+    "accuracy", "roc_auc", "log_loss", "f1_macro", "roc_auc_ovr_macro",
+    "mean_column_roc_auc", "mean_column_log_loss", "kappa_quadratic", "average_precision", "mcc",
+})
+
+
+def extract_metric_hints(task_desc: str) -> set[str]:
+    """Extract canonical metric names explicitly mentioned in ``task_desc``."""
+    import re
+    text = (task_desc or "").lower()
+    if not text:
+        return set()
+    hints: set[str] = set()
+    patterns: list[tuple[str, set[str]]] = [
+        (r"\bbalanced[_\s-]+accuracy\b", {"balanced_accuracy"}),
+        (r"\b(?:macro[_\s-]+f1|f1[_\s-]+macro)\b", {"f1_macro"}),
+        (r"\b(?:weighted[_\s-]+f1|f1[_\s-]+weighted)\b", {"f1_weighted"}),
+        (r"\b(?:binary[_\s-]+f1|f1[_\s-]+binary|f1[_\s-]score)\b", {"f1_binary", "f1_at_0.5"}),
+        (r"\b(?:macro[_\s-]+precision|precision[_\s-]+macro)\b", {"precision_macro"}),
+        (r"\b(?:macro[_\s-]+recall|recall[_\s-]+macro)\b", {"recall_macro"}),
+        (r"\b(?:quadratic[_\s-]+weighted[_\s-]+kappa|qwk)\b", {"kappa_quadratic"}),
+        (r"\b(?:cohen'?s?[_\s-]+kappa)\b", {"kappa", "kappa_linear", "kappa_quadratic"}),
+        (r"\b(?:matthews|mcc)\b", {"mcc"}),
+        (r"\b(?:roc[_\s-]*auc|area\s+under\s+the\s+roc|auroc)\b",
+         {"roc_auc", "roc_auc_ovr_macro", "roc_auc_ovr_weighted", "mean_column_roc_auc"}),
+        (r"\b(?:average[_\s-]+precision|pr[_\s-]*auc|auprc)\b", {"average_precision"}),
+        (r"\b(?:log[_\s-]*loss|cross[_\s-]*entropy)\b", {"log_loss", "mean_column_log_loss"}),
+        (r"\bbrier\b", {"brier"}),
+        (r"\bgini\b", {"gini"}),
+        (r"\bmap\s*@\s*3|map_at_3\b", {"map_at_3"}),
+    ]
+    for pat, names in patterns:
+        if re.search(pat, text):
+            hints |= names
+    cleaned = re.sub(r"\bbalanced[_\s-]+accuracy\b", " ", text)
+    if re.search(r"\baccuracy\b", cleaned):
+        hints |= {"accuracy", "accuracy_at_0.5"}
+    return hints
+
+
+def identify_metric(
+    members: Sequence[tuple[ValFiles, float]],
+    higher_is_better: bool,
+    min_members: int = 2,
+    *,
+    task_desc: str = "",
+) -> Identification:
     """``members`` are (validation files, reported score). The metric must reproduce most reported scores."""
     usable = [(v, s) for v, s in members if v.ok and v.true is not None and v.pred is not None]
     if len(usable) < min_members:
@@ -271,26 +317,38 @@ def identify_metric(members: Sequence[tuple[ValFiles, float]], higher_is_better:
     if len(encodings) != 1:
         return Identification(None, None, checked=len(usable), reason=f"validation files use different or unknown encodings: {sorted(map(str, encodings))}")
     enc = encodings.pop()
-    best: tuple[int, float, Metric] | None = None
+    hints = extract_metric_hints(task_desc)
+    needed = max(min_members, math.ceil(0.6 * len(usable)))
+    max_hits = 0
+    best_valid: tuple[tuple[float, ...], Metric, int] | None = None
     per: dict[str, int] = {}
     for metric in metric_library():
         if metric.encoding != enc or metric.higher_is_better != higher_is_better:
             continue
         hits = 0
+        exact_hits = 0
         errs = []
         for v, reported in usable:
             val = safe_score(metric, v.true, v.pred)  # type: ignore[arg-type]
             if matches(val, reported):
                 hits += 1
             if val is not None:
-                errs.append(abs(val - reported))
+                diff = abs(val - reported)
+                errs.append(diff)
+                if diff <= ABS_TOLERANCE:
+                    exact_hits += 1
         per[metric.name] = hits
+        max_hits = max(max_hits, hits)
+        if hits < needed:
+            continue
         err = float(np.median(errs)) if errs else float("inf")
-        key = (hits, -err)
-        if best is None or key > (best[0], -best[1]):
-            best = (hits, err, metric)
-    needed = max(min_members, math.ceil(0.6 * len(usable)))
-    if best is None or best[0] < needed:
-        return Identification(None, enc, best[0] if best else 0, len(usable),
+        hinted = 1 if (metric.name in hints and err <= max(ABS_TOLERANCE, REL_TOLERANCE)) else 0
+        primary = 1 if metric.name in PRIMARY_METRICS else 0
+        err_band = -round(err / 2e-3) if not hinted else 0
+        key = (float(hits), float(hinted), float(exact_hits), float(err_band), float(primary), -err)
+        if best_valid is None or key > best_valid[0]:
+            best_valid = (key, metric, hits)
+    if best_valid is None:
+        return Identification(None, enc, max_hits, len(usable),
                               f"no metric of the library reproduces at least {needed} of {len(usable)} reported scores", per)
-    return Identification(best[2], enc, best[0], len(usable), "ok", per)
+    return Identification(best_valid[1], enc, best_valid[2], len(usable), "ok", per)

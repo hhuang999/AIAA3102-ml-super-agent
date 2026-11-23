@@ -1,11 +1,11 @@
 # --- Agent runtime ---
-openai>=1.40            # OpenAI-compatible LLM client
+tfrecord>=1.14.6
+openai>=2.44,<3         # OpenAI-compatible LLM client
 PyYAML>=6.0             # configuration and method catalog
 numpy>=1.26
 pandas>=2.1             # data profiling, prediction checks, ensembling
 huggingface_hub>=0.24   # fetch_models (pretrained weights download)
 sentence-transformers>=3.0  # experience-store embeddings (Qwen3-Embedding)
-pytest>=8.0             # test suite
 
 # --- Libraries available to generated solution scripts ---
 scikit-learn>=1.4
@@ -16,7 +16,7 @@ catboost>=1.2
 torch>=2.3
 torchvision>=0.18
 timm>=1.0
-transformers>=4.48      # ModernBERT needs >= 4.48
+transformers>=4.51.0    # local Qwen3 embedding support
 sentencepiece>=0.2      # DeBERTa-v3 / XLM-R tokenizers
 protobuf>=4.25
 tiktoken>=0.7
